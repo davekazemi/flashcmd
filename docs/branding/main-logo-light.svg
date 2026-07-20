@@ -1,0 +1,22 @@
+<svg width="900" height="260" viewBox="0 0 900 260" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="badgeGradL" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#152238"/>
+      <stop offset="100%" stop-color="#0F172A"/>
+    </linearGradient>
+    <linearGradient id="boltGradL" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#3B82F6"/>
+      <stop offset="55%" stop-color="#2563EB"/>
+      <stop offset="100%" stop-color="#06B6D4"/>
+    </linearGradient>
+  </defs>
+
+  <g transform="translate(30,30)">
+    <rect x="4" y="4" width="192" height="192" rx="42" fill="url(#badgeGradL)"/>
+    <path d="M69,50 L102,77 L89,87 L131,103" fill="none" stroke="url(#boltGradL)" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M131,103 L69,150" fill="none" stroke="url(#boltGradL)" stroke-width="15" stroke-linecap="round" stroke-linejoin="round"/>
+    <rect x="88" y="160" width="38" height="13" rx="6.5" fill="#F97316"/>
+  </g>
+
+  <text x="270" y="152" font-family="Segoe UI, Helvetica Neue, Arial, sans-serif" font-size="80" font-weight="400" fill="#0F172A">Flash<tspan font-weight="800" fill="#2563EB">Cmd</tspan></text>
+</svg>

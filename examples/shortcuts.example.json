@@ -1,0 +1,21 @@
+{
+  "shortcuts": [
+    {
+      "name": "List files",
+      "action_mode": "command_line",
+      "command": "python -c \"import os; print('\\n'.join(os.listdir()))\"",
+      "start_in": ""
+    },
+    {
+      "name": "Python version",
+      "action_mode": "program",
+      "program_path": "python",
+      "arguments": "--version",
+      "start_in": ""
+    }
+  ],
+  "settings": {
+    "theme": "light",
+    "primary_color": "blue"
+  }
+}

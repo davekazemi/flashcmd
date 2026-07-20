@@ -1,0 +1,113 @@
+name: Build release artifacts
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+      - run: python -m pip install --disable-pip-version-check -r requirements-build.txt
+      - name: Install WiX v4
+        shell: pwsh
+        run: dotnet tool install --global wix --version "4.*"
+      - name: Assert tag version
+        if: github.ref_type == 'tag'
+        shell: pwsh
+        run: |
+          $version = (python -c "from flashcmd_version import __version__; print(__version__)").Trim()
+          if ("${{ github.ref_name }}" -ne "v$version") { throw "Tag/version mismatch" }
+      - run: powershell -ExecutionPolicy Bypass -File scripts/build_windows.ps1
+      - name: Audit Windows packages
+        shell: pwsh
+        run: |
+          $version = (python -c "from flashcmd_version import __version__; print(__version__)").Trim()
+          $exe = "release/FlashCmd-$version-windows-x64.exe"
+          $msi = "release/FlashCmd-$version-windows-x64.msi"
+          if (-not (Test-Path $exe) -or -not (Test-Path $msi)) { throw "Missing release artifact" }
+          pyi-archive_viewer -l dist/FlashCmd.exe | Out-File archive-contents.txt
+          $forbidden = 'shortcuts\.json|backup-|docs[\\/]|examples[\\/]|\.p12|\.pfx|\.key'
+          if (Select-String -Path archive-contents.txt -Pattern $forbidden) { throw "Forbidden EXE content" }
+          $installer = New-Object -ComObject WindowsInstaller.Installer
+          $database = $installer.GetType().InvokeMember("OpenDatabase", "InvokeMethod", $null, $installer, @((Resolve-Path $msi).Path, 0))
+          $view = $database.OpenView('SELECT `FileName` FROM `File`'); $view.Execute()
+          $names = @(); while ($record = $view.Fetch()) { $names += $record.StringData(1) }
+          if (($names -join ',') -ne 'FlashCmd.exe') { throw "Unexpected MSI files: $($names -join ',')" }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FlashCmd-windows-x64
+          path: |
+            release/FlashCmd-*-windows-x64.exe
+            release/FlashCmd-*-windows-x64.msi
+          if-no-files-found: error
+
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+      - run: python -m pip install --disable-pip-version-check -r requirements-build.txt
+      - name: Import optional signing certificate
+        if: env.MACOS_CERTIFICATE != '' && env.MACOS_CERTIFICATE_PASSWORD != ''
+        uses: apple-actions/import-codesign-certs@v3
+        env:
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+        with:
+          p12-file-base64: ${{ secrets.MACOS_CERTIFICATE_P12_BASE64 }}
+          p12-password: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+      - name: Assert tag version
+        if: github.ref_type == 'tag'
+        run: |
+          version="$(python -c 'from flashcmd_version import __version__; print(__version__)')"
+          [[ "${{ github.ref_name }}" == "v${version}" ]]
+      - name: Build macOS DMG
+        env:
+          FLASHCMD_MACOS_SIGN_IDENTITY: ${{ secrets.MACOS_SIGN_IDENTITY }}
+          MACOS_NOTARY_KEY_BASE64: ${{ secrets.MACOS_NOTARY_KEY_BASE64 }}
+          FLASHCMD_MACOS_NOTARY_KEY_ID: ${{ secrets.MACOS_NOTARY_KEY_ID }}
+          FLASHCMD_MACOS_NOTARY_ISSUER: ${{ secrets.MACOS_NOTARY_ISSUER }}
+        run: |
+          key_path="${RUNNER_TEMP}/flashcmd-notary-key.p8"
+          cleanup() { rm -f -- "${key_path}"; }
+          trap cleanup EXIT
+          if [[ -n "${MACOS_NOTARY_KEY_BASE64}" ]]; then
+            printf '%s' "${MACOS_NOTARY_KEY_BASE64}" | base64 --decode > "${key_path}"
+            chmod 600 "${key_path}"
+            export FLASHCMD_MACOS_NOTARY_KEY_PATH="${key_path}"
+          fi
+          bash scripts/build_macos.sh
+      - name: Audit mounted DMG
+        run: |
+          version="$(python -c 'from flashcmd_version import __version__; print(__version__)')"
+          dmg="release/FlashCmd-${version}-macos-$(uname -m).dmg"
+          [[ -f "${dmg}" ]]
+          mount_point="$(hdiutil attach -nobrowse -readonly "${dmg}" | awk '/\/Volumes\// {print substr($0, index($0,$3)); exit}')"
+          trap 'hdiutil detach "${mount_point}" >/dev/null' EXIT
+          [[ -d "${mount_point}/FlashCmd.app" && -L "${mount_point}/Applications" ]]
+          root_entries="$(find "${mount_point}" -mindepth 1 -maxdepth 1 -exec basename {} \; | LC_ALL=C sort)"
+          [[ "${root_entries}" == $'Applications\nFlashCmd.app' ]]
+          if find "${mount_point}" -print | grep -Ei 'shortcuts\.json|backup-|/docs/|/examples/|\.p12$|\.pfx$|\.key$'; then
+            echo "Forbidden DMG content" >&2; exit 1
+          fi
+      - uses: actions/upload-artifact@v4
+        with:
+          name: FlashCmd-macos
+          path: release/FlashCmd-*-macos-*.dmg
+          if-no-files-found: error
