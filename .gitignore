@@ -26,9 +26,9 @@ release/*
 tests/*
 docs/
 release
-scripts/
-installer/
-packaging/
-examples/
+scripts/*
+installer/*
+packaging/*
+examples/*
 
 
