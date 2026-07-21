@@ -5,7 +5,7 @@ Set-Location $Root
 $Python = if ($env:PYTHON) { $env:PYTHON } else { "python" }
 $Version = (& $Python -c "from flashcmd_version import __version__; print(__version__)").Trim()
 if ($LASTEXITCODE -ne 0 -or $Version -notmatch '^\d+\.\d+\.\d+$') {
-    throw "Could not read a valid FlashCmd version."
+    throw "Could not read a valid FlashCMD version."
 }
 $WixCommandInfo = Get-Command wix -ErrorAction SilentlyContinue
 $WixCommand = if ($WixCommandInfo) { $WixCommandInfo.Source } else { $null }
@@ -18,9 +18,9 @@ if (-not $WixCommand) {
     }
 }
 
-$Portable = Join-Path $Root "release\FlashCmd-$Version-windows-x64.exe"
-$Msi = Join-Path $Root "release\FlashCmd-$Version-windows-x64.msi"
-$DistExe = Join-Path $Root "dist\FlashCmd.exe"
+$Portable = Join-Path $Root "release\FlashCMD-$Version-windows-x64.exe"
+$Msi = Join-Path $Root "release\FlashCMD-$Version-windows-x64.msi"
+$DistExe = Join-Path $Root "dist\FlashCMD.exe"
 
 function Remove-GeneratedPath([string]$Path) {
     $Full = [IO.Path]::GetFullPath($Path)
@@ -50,7 +50,7 @@ if (-not (Test-Path -LiteralPath $DistExe -PathType Leaf)) {
     throw "PyInstaller did not create $DistExe"
 }
 $VersionInfo = (Get-Item -LiteralPath $DistExe).VersionInfo
-if ($VersionInfo.ProductName -ne "FlashCmd" -or $VersionInfo.ProductVersion -ne $Version) {
+if ($VersionInfo.ProductName -ne "FlashCMD" -or $VersionInfo.ProductVersion -ne $Version) {
     throw "Packaged metadata mismatch: $($VersionInfo.ProductName) $($VersionInfo.ProductVersion)"
 }
 $SmokeProcess = Start-Process -FilePath $DistExe -ArgumentList "--version" -Wait -PassThru
@@ -70,6 +70,7 @@ if ($SigningEnabled) {
 
 Copy-Item -LiteralPath $DistExe -Destination $Portable
 & $WixCommand build installer\windows\FlashCmd.wxs -arch x64 `
+    -ext WixToolset.UI.wixext -ext WixToolset.Util.wixext `
     -d "ProductVersion=$Version" -d "SourceExe=$DistExe" -o $Msi
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 

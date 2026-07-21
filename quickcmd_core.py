@@ -1,4 +1,4 @@
-"""Pure configuration, filtering, and launch helpers for FlashCmd."""
+"""Pure configuration, filtering, and launch helpers for FlashCMD."""
 
 from copy import deepcopy
 import json
@@ -17,6 +17,8 @@ ACTION_MODE_COMMAND_LINE = "command_line"
 ACTION_MODE_PROGRAM = "program"
 GENERAL_FOLDER = "General"
 TASK_SCHEDULER_NAMESPACE = "http://schemas.microsoft.com/windows/2004/02/mit/task"
+APP_STORAGE_NAME = "FlashCMD"
+LEGACY_STORAGE_NAMES = ("FlashCmd", "QuickCMD")
 
 
 def current_platform(platform=None):
@@ -45,6 +47,7 @@ def default_settings(platform=None):
         "terminal_path": default_terminal_path(platform),
         "theme": "light",
         "primary_color": "blue",
+        "restore_hotkey": "",
     }
 
 
@@ -65,7 +68,7 @@ def executable_base_dir(module_file=__file__, sys_module=sys):
     return os.path.dirname(os.path.abspath(os.fspath(module_file)))
 
 
-def user_config_path(local_app_data=None, app_name="FlashCmd", platform=None, home=None):
+def user_config_path(local_app_data=None, app_name=APP_STORAGE_NAME, platform=None, home=None):
     """Return the app's persistent per-user configuration path."""
     system = current_platform(platform)
     home_dir = os.path.expanduser("~") if home is None else os.fspath(home)
@@ -91,15 +94,17 @@ def legacy_config_candidates(
     current = user_config_path(
         local_app_data, platform=system, home=home,
     )
-    if system != "windows":
-        return (current,)
-    legacy_user = user_config_path(
-        local_app_data, app_name="QuickCMD", platform=system, home=home,
+    legacy_names = [name for name in LEGACY_STORAGE_NAMES if name != APP_STORAGE_NAME]
+    legacy_users = tuple(
+        user_config_path(local_app_data, app_name=name, platform=system, home=home)
+        for name in legacy_names
     )
+    if system != "windows":
+        return (current, *legacy_users)
     legacy_executable = ntpath.join(
         executable_dir or executable_base_dir(), "shortcuts.json",
     )
-    return current, legacy_user, legacy_executable
+    return (current, *legacy_users, legacy_executable)
 
 
 class ConfigError(ValueError):
@@ -149,6 +154,11 @@ def normalize_folder(folder):
     return clean
 
 
+def normalize_restore_hotkey_setting(value):
+    """Store restore hotkeys as a simple trimmed string or disable them."""
+    return value.strip() if isinstance(value, str) else ""
+
+
 def normalize_config(raw, platform=None):
     """Return a detached, current-form configuration without writing it."""
     if isinstance(raw, list):
@@ -169,6 +179,9 @@ def normalize_config(raw, platform=None):
     normalized_settings = default_settings(platform)
     normalized_settings.update(deepcopy(settings))
     normalized_settings.pop("terminal_args", None)
+    normalized_settings["restore_hotkey"] = normalize_restore_hotkey_setting(
+        normalized_settings.get("restore_hotkey", ""),
+    )
     return {
         "shortcuts": deepcopy(shortcuts),
         "settings": normalized_settings,
@@ -270,7 +283,7 @@ def build_task_scheduler_xml(name, program_path, arguments="", working_directory
     tag = lambda value: f"{{{TASK_SCHEDULER_NAMESPACE}}}{value}"
     root = ET.Element(tag("Task"), {"version": "1.4"})
     registration = ET.SubElement(root, tag("RegistrationInfo"))
-    ET.SubElement(registration, tag("Description")).text = str(name).strip() or "FlashCmd shortcut"
+    ET.SubElement(registration, tag("Description")).text = str(name).strip() or "FlashCMD shortcut"
     ET.SubElement(root, tag("Triggers"))
     principals = ET.SubElement(root, tag("Principals"))
     principal = ET.SubElement(principals, tag("Principal"), {"id": "Author"})
@@ -302,7 +315,7 @@ def build_task_scheduler_xml(name, program_path, arguments="", working_directory
 
 
 def parse_task_scheduler_xml(xml_text):
-    """Parse one Task Scheduler Exec action into FlashCmd program fields."""
+    """Parse one Task Scheduler Exec action into FlashCMD program fields."""
     if not isinstance(xml_text, (str, bytes)):
         raise TaskSchedulerError("Task Scheduler XML must be text or bytes.")
     probe = xml_text.decode("utf-8", "ignore") if isinstance(xml_text, bytes) else xml_text

@@ -7,8 +7,8 @@ PYTHON_BIN="${PYTHON:-python}"
 VERSION="$("${PYTHON_BIN}" -c 'from flashcmd_version import __version__; print(__version__)')"
 [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "Invalid version" >&2; exit 1; }
 ARCH="$(uname -m)"
-DMG_PATH="${ROOT_DIR}/release/FlashCmd-${VERSION}-macos-${ARCH}.dmg"
-APP_PATH="${ROOT_DIR}/dist/FlashCmd.app"
+DMG_PATH="${ROOT_DIR}/release/FlashCMD-${VERSION}-macos-${ARCH}.dmg"
+APP_PATH="${ROOT_DIR}/dist/FlashCMD.app"
 STAGING_DIR=""
 MOUNT_POINT=""
 ICON_BASELINE=""
@@ -37,12 +37,12 @@ safe_remove_generated() {
 
 bash scripts/test.sh
 ICON_BASELINE="$(mktemp "${TMPDIR:-/tmp}/flashcmd-icon-baseline.XXXXXX")"
-if [[ -f icons/FlashCmd.icns ]]; then cp icons/FlashCmd.icns "${ICON_BASELINE}"; fi
+if [[ -f docs/branding/FlashCmd.icns ]]; then cp docs/branding/FlashCmd.icns "${ICON_BASELINE}"; fi
 bash scripts/generate_macos_icon.sh
-if [[ -s "${ICON_BASELINE}" ]] && cmp -s "${ICON_BASELINE}" icons/FlashCmd.icns; then
+if [[ -s "${ICON_BASELINE}" ]] && cmp -s "${ICON_BASELINE}" docs/branding/FlashCmd.icns; then
   echo "Generated ICNS matches the checked-in asset."
 else
-  echo "Generated ICNS refreshed from icons/icon-badge.png."
+  echo "Generated ICNS refreshed from docs/branding/icon-badge.png."
 fi
 
 safe_remove_generated "${ROOT_DIR}/build"
@@ -51,8 +51,8 @@ safe_remove_generated "${DMG_PATH}"
 mkdir -p "${ROOT_DIR}/release"
 "${PYTHON_BIN}" -m PyInstaller --clean --noconfirm packaging/flashcmd-macos.spec
 
-REPORTED="$("${APP_PATH}/Contents/MacOS/FlashCmd" --version)"
-[[ "${REPORTED}" == "FlashCmd ${VERSION}" ]] || { echo "Version smoke test failed: ${REPORTED}" >&2; exit 1; }
+REPORTED="$("${APP_PATH}/Contents/MacOS/FlashCMD" --version)"
+[[ "${REPORTED}" == "FlashCMD ${VERSION}" ]] || { echo "Version smoke test failed: ${REPORTED}" >&2; exit 1; }
 
 SIGN_IDENTITY="${FLASHCMD_MACOS_SIGN_IDENTITY:-}"
 NOTARY_PROFILE="${FLASHCMD_MACOS_NOTARY_PROFILE:-}"
@@ -72,9 +72,9 @@ else
 fi
 
 STAGING_DIR="$(mktemp -d "${TMPDIR:-/tmp}/flashcmd-dmg.XXXXXX")"
-cp -R "${APP_PATH}" "${STAGING_DIR}/FlashCmd.app"
+cp -R "${APP_PATH}" "${STAGING_DIR}/FlashCMD.app"
 ln -s /Applications "${STAGING_DIR}/Applications"
-hdiutil create -volname "FlashCmd" -srcfolder "${STAGING_DIR}" -ov -format UDZO "${DMG_PATH}"
+hdiutil create -volname "FlashCMD" -srcfolder "${STAGING_DIR}" -ov -format UDZO "${DMG_PATH}"
 
 if [[ "${SIGNED_BUILD}" -eq 1 ]]; then
   codesign --force --timestamp --sign "${SIGN_IDENTITY}" "${DMG_PATH}"
@@ -92,7 +92,7 @@ hdiutil verify "${DMG_PATH}"
 ATTACH_PLIST="$(hdiutil attach -nobrowse -readonly -plist "${DMG_PATH}")"
 MOUNT_POINT="$(printf '%s' "${ATTACH_PLIST}" | "${PYTHON_BIN}" -c \
   'import plistlib,sys; p=plistlib.load(sys.stdin.buffer); print(next(e["mount-point"] for e in p["system-entities"] if "mount-point" in e))')"
-[[ -d "${MOUNT_POINT}/FlashCmd.app" && -L "${MOUNT_POINT}/Applications" ]]
+[[ -d "${MOUNT_POINT}/FlashCMD.app" && -L "${MOUNT_POINT}/Applications" ]]
 hdiutil detach "${MOUNT_POINT}"
 MOUNT_POINT=""
 echo "Built ${DMG_PATH}"

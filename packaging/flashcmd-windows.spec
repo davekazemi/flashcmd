@@ -25,10 +25,10 @@ VERSION_INFO = VSVersionInfo(
     kids=[
         StringFileInfo([StringTable("040904B0", [
             StringStruct("CompanyName", APP_NAME),
-            StringStruct("FileDescription", "FlashCmd shortcut manager"),
+            StringStruct("FileDescription", "FlashCMD shortcut manager"),
             StringStruct("FileVersion", __version__),
             StringStruct("InternalName", APP_NAME),
-            StringStruct("OriginalFilename", "FlashCmd.exe"),
+            StringStruct("OriginalFilename", "FlashCMD.exe"),
             StringStruct("ProductName", APP_NAME),
             StringStruct("ProductVersion", __version__),
         ])]),
@@ -41,10 +41,14 @@ a = Analysis(
     pathex=[str(ROOT)],
     binaries=[],
     datas=[
-        (str(ROOT / "icons" / "FlashCmd.ico"), "icons"),
-        (str(ROOT / "icons" / "icon-badge.png"), "icons"),
+        (str(ROOT / "docs" / "branding" / "FlashCmd.ico"), "docs/branding"),
+        (str(ROOT / "docs" / "branding" / "icon-badge.png"), "docs/branding"),
+        (str(ROOT / "docs" / "branding" / "bmc-button.png"), "docs/branding"),
     ],
-    hiddenimports=["flashcmd_launcher", "flashcmd_version", "quickcmd_core"],
+    hiddenimports=[
+        "flashcmd_launcher", "flashcmd_version", "quickcmd_core",
+        "pynput", "pynput.keyboard", "pynput.keyboard._win32", "pynput._util.win32",
+    ],
     hookspath=[], hooksconfig={}, runtime_hooks=[], excludes=[], noarchive=False,
 )
 pyz = PYZ(a.pure)
@@ -56,6 +60,6 @@ exe = EXE(
     strip=False,
     upx=True,
     console=False,
-    icon=str(ROOT / "icons" / "FlashCmd.ico"),
+    icon=str(ROOT / "docs" / "branding" / "FlashCmd.ico"),
     version=VERSION_INFO,
 )

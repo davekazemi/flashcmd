@@ -1,4 +1,4 @@
-"""Narrow native launch abstraction for FlashCmd shortcuts."""
+"""Narrow native launch abstraction for FlashCMD shortcuts."""
 
 import os
 import shlex
@@ -92,7 +92,7 @@ def launch_program(program_path, arguments="", start_in="", platform=None):
     if system == "macos":
         argv = [program, *shlex.split(arguments)]
         return subprocess.Popen(argv, shell=False, cwd=start_in or None)
-    raise NotImplementedError(f"FlashCmd program launching is unsupported on {system}.")
+    raise NotImplementedError(f"FlashCMD program launching is unsupported on {system}.")
 
 
 def launch_shortcut(terminal_path, command, start_in="", platform=None):
@@ -102,4 +102,4 @@ def launch_shortcut(terminal_path, command, start_in="", platform=None):
         return _launch_windows(terminal_path, command, start_in)
     if system == "macos":
         return _launch_macos(terminal_path, command, start_in)
-    raise NotImplementedError(f"FlashCmd command launching is unsupported on {system}.")
+    raise NotImplementedError(f"FlashCMD command launching is unsupported on {system}.")

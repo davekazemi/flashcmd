@@ -2,8 +2,8 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-SOURCE_IMAGE="${ROOT_DIR}/icons/icon-badge.png"
-OUTPUT_IMAGE="${1:-${ROOT_DIR}/icons/FlashCmd.icns}"
+SOURCE_IMAGE="${ROOT_DIR}/docs/branding/icon-badge.png"
+OUTPUT_IMAGE="${1:-${ROOT_DIR}/docs/branding/FlashCmd.icns}"
 TEMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/flashcmd-iconset.XXXXXX")"
 ICONSET_DIR="${TEMP_DIR}/FlashCmd.iconset"
 trap 'rm -rf -- "${TEMP_DIR}"' EXIT

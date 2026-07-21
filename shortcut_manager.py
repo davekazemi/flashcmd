@@ -1,21 +1,25 @@
 from json import JSONDecodeError
+import hashlib
+import importlib
 import ntpath
 import os
 import posixpath
+import queue
 import shutil
+import socket
 import sys
+import threading
 import tkinter as tk
+import webbrowser
 from tkinter import filedialog, messagebox, ttk
 
 from PIL import Image, ImageTk
 
 if sys.platform == "win32":
     import ctypes
-    import queue
-    import threading
     import pystray
 else:
-    ctypes = queue = threading = pystray = None
+    ctypes = pystray = None
 
 from flashcmd_launcher import launch_program, launch_shortcut
 from flashcmd_version import APP_NAME, __version__
@@ -52,9 +56,10 @@ CONFIG_CANDIDATES = legacy_config_candidates(
     platform=PLATFORM, executable_dir=EXECUTABLE_DIR,
 )
 CONFIG_FILE = CONFIG_CANDIDATES[0]
-ICON_DIR = os.path.join(RESOURCE_DIR, "icons")
-APP_ICON_FILE = os.path.join(ICON_DIR, "FlashCmd.ico")
-HEADER_ICON_FILE = os.path.join(ICON_DIR, "icon-badge.png")
+BRANDING_DIR = os.path.join(RESOURCE_DIR, "docs", "branding")
+APP_ICON_FILE = os.path.join(BRANDING_DIR, "FlashCmd.ico")
+HEADER_ICON_FILE = os.path.join(BRANDING_DIR, "icon-badge.png")
+BMC_BUTTON_FILE = os.path.join(BRANDING_DIR, "bmc-button.png")
 PRIMARY_COLORS = {
     "blue": ("Blue", "#2563EB"),
     "cyan": ("Cyan", "#0E7490"),
@@ -86,6 +91,39 @@ FONTS = {
     "card_title": ("Segoe UI", 11, "bold"), "command": ("Consolas", 10),
 }
 SPACE = {"xs": 4, "sm": 8, "md": 12, "lg": 20, "xl": 24}
+INSTANCE_HOST = "127.0.0.1"
+INSTANCE_MESSAGE_RESTORE = b"restore\n"
+INSTANCE_BACKLOG = 5
+BUY_ME_A_COFFEE_URL = "https://buymeacoffee.com/davoodkazemi"
+HOTKEY_MODIFIER_ORDER = ("Ctrl", "Alt", "Shift", "Cmd")
+HOTKEY_MODIFIER_ALIASES = {
+    "ctrl": ("Ctrl", "<ctrl>"), "control": ("Ctrl", "<ctrl>"), "ctl": ("Ctrl", "<ctrl>"),
+    "alt": ("Alt", "<alt>"), "option": ("Alt", "<alt>"), "opt": ("Alt", "<alt>"),
+    "shift": ("Shift", "<shift>"),
+    "cmd": ("Cmd", "<cmd>"), "command": ("Cmd", "<cmd>"), "win": ("Cmd", "<cmd>"),
+    "windows": ("Cmd", "<cmd>"), "super": ("Cmd", "<cmd>"), "meta": ("Cmd", "<cmd>"),
+}
+HOTKEY_CAPTURE_MODIFIERS = {
+    "control_l": "Ctrl", "control_r": "Ctrl", "control": "Ctrl",
+    "alt_l": "Alt", "alt_r": "Alt", "alt": "Alt", "option_l": "Alt", "option_r": "Alt",
+    "shift_l": "Shift", "shift_r": "Shift", "shift": "Shift",
+    "command": "Cmd", "command_l": "Cmd", "command_r": "Cmd",
+    "super_l": "Cmd", "super_r": "Cmd", "meta_l": "Cmd", "meta_r": "Cmd",
+    "win_l": "Cmd", "win_r": "Cmd",
+}
+HOTKEY_SPECIAL_KEYS = {
+    "space": ("Space", "<space>"), "tab": ("Tab", "<tab>"),
+    "enter": ("Enter", "<enter>"), "return": ("Enter", "<enter>"),
+    "esc": ("Esc", "<esc>"), "escape": ("Esc", "<esc>"),
+    "delete": ("Delete", "<delete>"), "del": ("Delete", "<delete>"),
+    "backspace": ("Backspace", "<backspace>"),
+    "home": ("Home", "<home>"), "end": ("End", "<end>"),
+    "pageup": ("Page Up", "<page_up>"), "pagedown": ("Page Down", "<page_down>"),
+    "pgup": ("Page Up", "<page_up>"), "pgdn": ("Page Down", "<page_down>"),
+    "insert": ("Insert", "<insert>"), "ins": ("Insert", "<insert>"),
+    "up": ("Up", "<up>"), "down": ("Down", "<down>"),
+    "left": ("Left", "<left>"), "right": ("Right", "<right>"),
+}
 
 
 def _blend(first, second, first_weight):
@@ -188,7 +226,171 @@ def configure_styles(root):
     style.map("Danger.TButton", background=[("active", COLORS["danger_surface"]), ("pressed", COLORS["danger_pressed"])], foreground=[("disabled", COLORS["disabled"])])
     style.configure("Header.TButton", background=COLORS["header_tile"], foreground=COLORS["white"], bordercolor="#334155", padding=(12, 7))
     style.map("Header.TButton", background=[("active", "#334155"), ("pressed", COLORS["primary"])])
+    style.configure(
+        "HeaderIcon.TButton",
+        background=COLORS["header_tile"], foreground=COLORS["white"],
+        bordercolor="#64748B", lightcolor="#64748B", darkcolor="#64748B",
+        borderwidth=1, relief="solid", padding=(10, 1),
+        font=("Segoe UI Symbol", 16, "bold"),
+    )
+    style.map("HeaderIcon.TButton", background=[("active", "#334155"), ("pressed", COLORS["primary"])])
     return style
+
+
+def instance_port(config_file=CONFIG_FILE):
+    """Return a stable per-user loopback port for single-instance signaling."""
+    seed = os.path.normcase(os.path.abspath(os.fspath(config_file))).encode("utf-8", "surrogatepass")
+    digest = hashlib.sha256(seed).digest()
+    return 41000 + (int.from_bytes(digest[:2], "big") % 20000)
+
+
+def notify_existing_instance(port, host=INSTANCE_HOST, timeout=1.0):
+    """Ask the already-running instance to restore its window."""
+    with socket.create_connection((host, port), timeout=timeout) as connection:
+        connection.sendall(INSTANCE_MESSAGE_RESTORE)
+    return True
+
+
+class SingleInstanceEndpoint:
+    """Serve simple loopback restore requests for the primary process."""
+
+    def __init__(self, port, host=INSTANCE_HOST):
+        self.host = host
+        self._restore_callback = None
+        self._pending_restore = False
+        self._closed = threading.Event()
+        self._socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        if is_windows() and hasattr(socket, "SO_EXCLUSIVEADDRUSE"):
+            self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_EXCLUSIVEADDRUSE, 1)
+        elif hasattr(socket, "SO_REUSEADDR"):
+            self._socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self._socket.bind((host, port))
+        self._socket.listen(INSTANCE_BACKLOG)
+        self._socket.settimeout(0.5)
+        self.port = self._socket.getsockname()[1]
+        self._thread = threading.Thread(
+            target=self._serve, name="FlashCMDInstanceServer", daemon=True,
+        )
+        self._thread.start()
+
+    def set_restore_callback(self, callback):
+        self._restore_callback = callback
+        if self._pending_restore and callback is not None:
+            self._pending_restore = False
+            callback()
+
+    def close(self):
+        if self._closed.is_set():
+            return
+        self._closed.set()
+        try:
+            self._socket.close()
+        except OSError:
+            pass
+        if self._thread.is_alive():
+            self._thread.join(timeout=1.0)
+
+    def _serve(self):
+        while not self._closed.is_set():
+            try:
+                connection, _address = self._socket.accept()
+            except socket.timeout:
+                continue
+            except OSError:
+                break
+            with connection:
+                try:
+                    message = connection.recv(64)
+                except OSError:
+                    continue
+                if message.strip().lower() == INSTANCE_MESSAGE_RESTORE.strip():
+                    if self._restore_callback is None:
+                        self._pending_restore = True
+                    else:
+                        self._restore_callback()
+
+
+def _normalize_hotkey_main_token(token):
+    clean = token.strip()
+    key = clean.casefold().replace(" ", "")
+    if len(key) == 1 and key.isalnum():
+        return (key.upper() if key.isalpha() else key, key.lower())
+    if key in HOTKEY_SPECIAL_KEYS:
+        return HOTKEY_SPECIAL_KEYS[key]
+    if key.startswith("f") and key[1:].isdigit():
+        number = int(key[1:])
+        if 1 <= number <= 24:
+            return (f"F{number}", f"<f{number}>")
+    raise ValueError(
+        "Use a letter, number, function key, or a key such as Enter, Space, or Escape.",
+    )
+
+
+def hotkey_modifier_from_keysym(keysym):
+    """Map a Tk keysym to one canonical modifier display name."""
+    return HOTKEY_CAPTURE_MODIFIERS.get(str(keysym).strip().casefold())
+
+
+def capture_restore_hotkey(keysym, active_modifiers):
+    """Build one canonical restore hotkey from a Tk keysym and held modifiers."""
+    main_display, _expression = _normalize_hotkey_main_token(str(keysym))
+    ordered_modifiers = [
+        display for display in HOTKEY_MODIFIER_ORDER if display in set(active_modifiers)
+    ]
+    if not ordered_modifiers:
+        raise ValueError("Include at least one modifier key such as Ctrl, Alt, Shift, or Cmd.")
+    return "+".join([*ordered_modifiers, main_display])
+
+
+def parse_restore_hotkey(value):
+    """Return canonical display and pynput hotkey expressions."""
+    text = "" if value is None else str(value).strip()
+    if not text:
+        return "", ""
+    parts = [part.strip() for part in text.replace(",", "+").split("+")]
+    if any(not part for part in parts):
+        raise ValueError("Use plus signs between keys, for example Ctrl+Alt+F.")
+    modifiers = {}
+    main_display = main_expression = ""
+    for part in parts:
+        key = part.casefold().replace(" ", "")
+        if key in HOTKEY_MODIFIER_ALIASES:
+            display, expression = HOTKEY_MODIFIER_ALIASES[key]
+            if display in modifiers:
+                raise ValueError("Do not repeat the same modifier key.")
+            modifiers[display] = expression
+            continue
+        if main_expression:
+            raise ValueError("Use exactly one non-modifier key in the restore hotkey.")
+        main_display, main_expression = _normalize_hotkey_main_token(part)
+    if not modifiers:
+        raise ValueError("Include at least one modifier key such as Ctrl, Alt, Shift, or Cmd.")
+    if not main_expression:
+        raise ValueError("Add a final key such as F, F12, Enter, or Space.")
+    ordered_modifiers = [
+        (display, modifiers[display]) for display in HOTKEY_MODIFIER_ORDER if display in modifiers
+    ]
+    display = "+".join([*(display for display, _expression in ordered_modifiers), main_display])
+    expression = "+".join([*(_expression for _display, _expression in ordered_modifiers), main_expression])
+    return display, expression
+
+
+def _load_hotkey_backend():
+    try:
+        return importlib.import_module("pynput.keyboard"), None
+    except Exception as error:
+        return None, str(error)
+
+
+def create_restore_hotkey_listener(expression, callback, keyboard_module=None):
+    """Create and start a pynput global hotkey listener."""
+    keyboard_module = keyboard_module or _load_hotkey_backend()[0]
+    keyboard_module.HotKey.parse(expression)
+    listener = keyboard_module.GlobalHotKeys({expression: callback})
+    listener.start()
+    if hasattr(listener, "wait"):
+        listener.wait()
+    return listener
 
 
 class ScrollableCardList(ttk.Frame):
@@ -605,7 +807,7 @@ class ShortcutDialog(_Dialog):
         safe_name = "".join(
             character if character.isalnum() or character in "-_ " else "_"
             for character in values["name"]
-        ).strip() or "FlashCmd Task"
+        ).strip() or "FlashCMD Task"
         destination = filedialog.asksaveasfilename(
             parent=self, title="Export Task Scheduler XML",
             defaultextension=".xml", initialfile=f"{safe_name}.xml",
@@ -655,7 +857,8 @@ class SettingsDialog(_Dialog):
     def __init__(self, parent, title, settings):
         self.settings = settings
         self.swatch_buttons = {}
-        super().__init__(parent, title, 620, "Save settings", minimum_height=485)
+        self._capture_modifiers = set()
+        super().__init__(parent, title, 620, "Save settings", minimum_height=560)
 
     def _build(self):
         self.body.columnconfigure(0, weight=1)
@@ -706,11 +909,37 @@ class SettingsDialog(_Dialog):
             self.swatch_buttons[key] = swatch
         self._update_swatch_states()
 
-        ttk.Separator(self.body).grid(row=11, column=0, sticky="ew", pady=(14, 12))
-        ttk.Label(self.body, text="Shortcut storage", style="Dialog.TLabel", font=("Segoe UI", 10, "bold")).grid(row=12, column=0, sticky="w")
+        ttk.Separator(self.body).grid(row=11, column=0, sticky="ew", pady=(14, 16))
+        ttk.Label(self.body, text="Global restore hotkey", style="Dialog.TLabel", font=("Segoe UI", 10, "bold")).grid(row=12, column=0, sticky="w")
+        ttk.Label(
+            self.body,
+            text=(
+                f"Leave blank to disable. Click the field and press a shortcut such as Ctrl+Alt+F. "
+                f"Use this to bring {APP_NAME} to the front."
+            ),
+            style="Helper.TLabel",
+            wraplength=550,
+        ).grid(row=13, column=0, sticky="w", pady=(2, 8))
+        hotkey_frame = ttk.Frame(self.body, style="Dialog.TFrame")
+        hotkey_frame.grid(row=14, column=0, sticky="ew")
+        hotkey_frame.columnconfigure(0, weight=1)
+        self.hotkey_var = tk.StringVar(value=str(self.settings.get("restore_hotkey", DEFAULT_SETTINGS["restore_hotkey"])))
+        self.hotkey = ttk.Entry(hotkey_frame, textvariable=self.hotkey_var, style="Dialog.TEntry")
+        self.hotkey.grid(row=0, column=0, sticky="ew")
+        self.hotkey.bind("<KeyPress>", self._capture_hotkey_keypress, add="+")
+        self.hotkey.bind("<KeyRelease>", self._capture_hotkey_keyrelease, add="+")
+        self.hotkey.bind("<FocusOut>", self._reset_hotkey_capture, add="+")
+        ttk.Button(hotkey_frame, text="Clear", command=self._clear_hotkey_capture, style="Secondary.TButton").grid(
+            row=0, column=1, padx=(SPACE["sm"], 0),
+        )
+        self.hotkey_error = tk.StringVar()
+        ttk.Label(self.body, textvariable=self.hotkey_error, style="Error.TLabel").grid(row=15, column=0, sticky="w", pady=(3, 0))
+
+        ttk.Separator(self.body).grid(row=16, column=0, sticky="ew", pady=(14, 12))
+        ttk.Label(self.body, text="Shortcut storage", style="Dialog.TLabel", font=("Segoe UI", 10, "bold")).grid(row=17, column=0, sticky="w")
         ttk.Label(
             self.body, text=CONFIG_FILE, style="Helper.TLabel", wraplength=550,
-        ).grid(row=13, column=0, sticky="w", pady=(3, 0))
+        ).grid(row=18, column=0, sticky="w", pady=(3, 0))
 
     def initial_focus(self):
         return self.path
@@ -741,8 +970,44 @@ class SettingsDialog(_Dialog):
                 highlightbackground=COLORS["text"] if key == selected else COLORS["card"],
             )
 
+    def _reset_hotkey_capture(self, _event=None):
+        self._capture_modifiers.clear()
+
+    def _clear_hotkey_capture(self):
+        self._capture_modifiers.clear()
+        self.hotkey_var.set("")
+        self.hotkey_error.set("")
+        self.hotkey.focus_set()
+
+    def _capture_hotkey_keypress(self, event):
+        modifier = hotkey_modifier_from_keysym(event.keysym)
+        if modifier:
+            self._capture_modifiers.add(modifier)
+            self.hotkey_error.set("")
+            return "break"
+        if event.keysym in ("BackSpace", "Delete"):
+            self._clear_hotkey_capture()
+            return "break"
+        try:
+            captured = capture_restore_hotkey(event.keysym, self._capture_modifiers)
+            captured, _expression = parse_restore_hotkey(captured)
+        except ValueError as error:
+            self.hotkey_error.set(str(error))
+            return "break"
+        self.hotkey_var.set(captured)
+        self.hotkey_error.set("")
+        return "break"
+
+    def _capture_hotkey_keyrelease(self, event):
+        modifier = hotkey_modifier_from_keysym(event.keysym)
+        if modifier:
+            self._capture_modifiers.discard(modifier)
+            return "break"
+        return None
+
     def _save(self):
         self.path_error.set("")
+        self.hotkey_error.set("")
         path = self.path.get().strip()
         noun = "terminal" if is_windows() else "shell"
         if not path:
@@ -753,10 +1018,17 @@ class SettingsDialog(_Dialog):
             self.path_error.set(f"The {noun} could not be found or is not executable.")
             self.path.focus_set()
             return
+        try:
+            hotkey, _expression = parse_restore_hotkey(self.hotkey_var.get())
+        except ValueError as error:
+            self.hotkey_error.set(str(error))
+            self.hotkey.focus_set()
+            return
         self.result = {
             "terminal_path": path,
             "theme": self.theme_var.get(),
             "primary_color": self.primary_var.get(),
+            "restore_hotkey": hotkey,
         }
         self.destroy()
 
@@ -764,8 +1036,9 @@ class SettingsDialog(_Dialog):
 TerminalDialog = SettingsDialog
 
 class ShortcutManager:
-    def __init__(self, root):
+    def __init__(self, root, instance_endpoint=None):
         self.root = root
+        self.instance_endpoint = instance_endpoint
         self.shortcuts = []
         self.settings = dict(DEFAULT_SETTINGS)
         self.selected_index = None
@@ -777,6 +1050,8 @@ class ShortcutManager:
         self._last_save_error = ""
         self.tray_icon = None
         self.tray_thread = None
+        self.hotkey_listener = None
+        self.active_restore_hotkey = ""
         self._tray_actions = queue.Queue() if is_windows() else None
         self._exiting = False
         self.search_var = tk.StringVar()
@@ -802,12 +1077,17 @@ class ShortcutManager:
         self.status_label = ttk.Label(root, textvariable=self.status_var, style="Status.TLabel", anchor="w")
         self.status_label.grid(row=2, column=0, sticky="ew")
         self._bind_shortcuts()
+        if self.instance_endpoint is not None:
+            self.instance_endpoint.set_restore_callback(self._queue_restore_request)
         if is_windows():
             self.root.after(100, self._process_tray_actions)
         self.search_var.trace_add("write", self._on_search_changed)
         self.refresh_cards(preserve_selection=False)
         if not loaded:
             self._set_status("Configuration could not be loaded", transient=True)
+        hotkey_error = self._apply_restore_hotkey(notify=False)
+        if hotkey_error:
+            self._set_status(hotkey_error, transient=True)
 
     def _configure_window(self):
         self.root.title(APP_NAME)
@@ -857,12 +1137,12 @@ class ShortcutManager:
         with Image.open(APP_ICON_FILE) as source:
             tray_image = source.convert("RGBA")
         menu = pystray.Menu(
-            pystray.MenuItem("Open FlashCmd", self._request_tray_restore, default=True),
+            pystray.MenuItem(f"Open {APP_NAME}", self._request_tray_restore, default=True),
             pystray.MenuItem("Exit", self._request_tray_exit),
         )
         self.tray_icon = pystray.Icon("flashcmd", tray_image, APP_NAME, menu)
         self.tray_thread = threading.Thread(
-            target=self.tray_icon.run, name="FlashCmdTray", daemon=True,
+            target=self.tray_icon.run, name="FlashCMDTray", daemon=True,
         )
         self.tray_thread.start()
 
@@ -908,19 +1188,90 @@ class ShortcutManager:
     def restore_from_tray(self):
         if self._exiting:
             return
-        self.root.deiconify()
-        self.root.state("normal")
+        try:
+            self.root.deiconify()
+            self.root.state("normal")
+        except tk.TclError:
+            return
         self.root.lift()
-        self.root.focus_force()
+        try:
+            self.root.attributes("-topmost", True)
+            self.root.after(150, lambda: self.root.attributes("-topmost", False))
+        except tk.TclError:
+            pass
+        try:
+            self.root.focus_force()
+        except tk.TclError:
+            pass
 
     def exit_application(self):
         if self._exiting:
             return
         self._exiting = True
+        self._stop_restore_hotkey_listener()
         if self.tray_icon is not None:
             self.tray_icon.stop()
             self.tray_icon = None
         self.root.destroy()
+
+    def _queue_restore_request(self):
+        if self._exiting:
+            return
+        try:
+            self.root.after(0, self.restore_from_tray)
+        except tk.TclError:
+            pass
+
+    def _stop_restore_hotkey_listener(self):
+        if self.hotkey_listener is None:
+            return
+        try:
+            self.hotkey_listener.stop()
+        except Exception:
+            pass
+        self.hotkey_listener = None
+        self.active_restore_hotkey = ""
+
+    def _hotkey_error_message(self, error):
+        detail = str(error)
+        if is_macos():
+            return (
+                f"Restore hotkey unavailable: {detail}\n\n"
+                "macOS may require Accessibility permission for global keyboard monitoring."
+            )
+        return f"Restore hotkey unavailable: {detail}"
+
+    def _apply_restore_hotkey(self, notify=False):
+        self._stop_restore_hotkey_listener()
+        hotkey = self.settings.get("restore_hotkey", "")
+        try:
+            display, expression = parse_restore_hotkey(hotkey)
+        except ValueError as error:
+            message = f"Restore hotkey disabled: {error}"
+            if notify:
+                messagebox.showwarning("Restore Hotkey", message, parent=self.root)
+            return message
+        if not expression:
+            self.settings["restore_hotkey"] = ""
+            return None
+        keyboard_module, import_error = _load_hotkey_backend()
+        if keyboard_module is None:
+            message = self._hotkey_error_message(import_error or "pynput could not be imported.")
+            if notify:
+                messagebox.showwarning("Restore Hotkey", message, parent=self.root)
+            return message
+        try:
+            self.hotkey_listener = create_restore_hotkey_listener(
+                expression, self._queue_restore_request, keyboard_module,
+            )
+        except Exception as error:
+            message = self._hotkey_error_message(error)
+            if notify:
+                messagebox.showwarning("Restore Hotkey", message, parent=self.root)
+            return message
+        self.settings["restore_hotkey"] = display
+        self.active_restore_hotkey = display
+        return None
 
     def _build_header(self):
         self.header = tk.Frame(self.root, bg=COLORS["header"], padx=SPACE["xl"], pady=15)
@@ -938,8 +1289,38 @@ class ShortcutManager:
         self.header_title.grid(row=0, column=1, sticky="sw")
         self.header_subtitle = tk.Label(self.header, text="Launch saved commands without the repetitive setup.", bg=COLORS["header"], fg=COLORS["header_subtext"], font=FONTS["small"], anchor="w")
         self.header_subtitle.grid(row=1, column=1, sticky="nw")
-        self.settings_button = ttk.Button(self.header, text="Settings", command=self.open_settings, style="Header.TButton")
-        self.settings_button.grid(row=0, column=2, rowspan=2, sticky="e")
+        self.header_actions = tk.Frame(self.header, bg=COLORS["header"])
+        self.header_actions.grid(row=0, column=2, rowspan=2, sticky="e")
+        self.header_actions.columnconfigure(0, weight=0)
+        self.header_actions.columnconfigure(1, weight=0)
+        with Image.open(BMC_BUTTON_FILE) as support_source:
+            support_image = support_source.convert("RGBA")
+            width, height = support_image.size
+            target_height = 40
+            target_width = max(1, round(width * (target_height / max(1, height))))
+            resized_support = support_image.resize((target_width, target_height), Image.Resampling.LANCZOS)
+        self.support_button_image = ImageTk.PhotoImage(resized_support)
+        self.support_button = tk.Button(
+            self.header_actions, image=self.support_button_image,
+            command=self.open_buy_me_a_coffee, cursor="hand2",
+            bg=COLORS["header"], activebackground=COLORS["header"],
+            bd=0, highlightthickness=0, relief="flat", takefocus=True,
+        )
+        self.support_button.grid(row=0, column=0, sticky="e")
+        self.settings_button = ttk.Button(
+            self.header_actions, text="⚙", width=2,
+            command=self.open_settings, style="HeaderIcon.TButton",
+        )
+        self.settings_button.grid(row=0, column=1, sticky="e", padx=(SPACE["sm"], 0))
+
+    def open_buy_me_a_coffee(self):
+        try:
+            webbrowser.open_new_tab(BUY_ME_A_COFFEE_URL)
+        except Exception as error:
+            messagebox.showerror(
+                "Open link", f"{APP_NAME} could not open the support link:\n\n{error}",
+                parent=self.root,
+            )
 
     def _build_toolbar(self):
         toolbar = ttk.Frame(self.main, style="App.TFrame")
@@ -1266,8 +1647,11 @@ class ShortcutManager:
         self.settings.update(dialog.result)
         saved = self.save()
         self._apply_appearance()
+        hotkey_error = self._apply_restore_hotkey(notify=True)
         self.refresh_cards(preserve_selection=True)
         message = "Settings saved" if saved else "Settings changed locally, but were not saved"
+        if hotkey_error:
+            message = "Settings saved, but the restore hotkey is unavailable" if saved else "Settings changed locally, but the restore hotkey is unavailable"
         self._set_status(message, transient=True)
 
     def terminal_settings(self):
@@ -1283,9 +1667,11 @@ class ShortcutManager:
         configure_styles(self.root)
         self.root.configure(bg=COLORS["background"])
         self.header.configure(bg=COLORS["header"])
+        self.header_actions.configure(bg=COLORS["header"])
         self.header_icon_label.configure(bg=COLORS["header"])
         self.header_title.configure(bg=COLORS["header"], fg=COLORS["white"])
         self.header_subtitle.configure(bg=COLORS["header"], fg=COLORS["header_subtext"])
+        self.support_button.configure(bg=COLORS["header"], activebackground=COLORS["header"])
         self.card_list.apply_appearance()
 
     def run(self):
@@ -1321,10 +1707,22 @@ def main(argv=None):
     if args == ["--version"]:
         print(f"{APP_NAME} {__version__}")
         return 0
-    root = tk.Tk()
-    ShortcutManager(root)
-    root.mainloop()
-    return 0
+    try:
+        endpoint = SingleInstanceEndpoint(instance_port())
+    except OSError:
+        try:
+            notify_existing_instance(instance_port())
+            return 0
+        except OSError as error:
+            print(f"{APP_NAME} could not contact its running instance: {error}", file=sys.stderr)
+            return 1
+    try:
+        root = tk.Tk()
+        ShortcutManager(root, instance_endpoint=endpoint)
+        root.mainloop()
+        return 0
+    finally:
+        endpoint.close()
 
 
 if __name__ == "__main__":

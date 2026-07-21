@@ -23,3 +23,5 @@ dist/
 release/*
 !release/.gitkeep
 tests/*
+docs/
+
