@@ -6,6 +6,7 @@
 /release/*.exe
 /release/*.msi
 /release/*.wixpdb
-
+!README.md
+!requirements.txt
 __pycache__/
 *.py[cod]
