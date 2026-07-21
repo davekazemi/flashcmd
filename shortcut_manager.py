@@ -13,7 +13,7 @@ import threading
 import tkinter as tk
 import uuid
 import webbrowser
-from tkinter import colorchooser, filedialog, messagebox, ttk
+from tkinter import colorchooser, filedialog, messagebox, simpledialog, ttk
 
 from PIL import Image, ImageTk
 
@@ -35,6 +35,7 @@ from quickcmd_core import (
     GENERAL_FOLDER,
     TaskSchedulerError,
     ValidationError,
+    build_task_scheduler_shortcut_xml,
     build_task_scheduler_xml,
     command_preview,
     current_platform,
@@ -45,6 +46,7 @@ from quickcmd_core import (
     normalize_shortcut_color,
     normalize_action_input,
     normalize_shortcut_input,
+    parse_task_scheduler_shortcut_xml,
     parse_task_scheduler_xml,
     resource_base_dir,
     save_config,
@@ -457,11 +459,12 @@ class ScrollableCardList(ttk.Frame):
 
 
 class ShortcutCard(tk.Frame):
-    def __init__(self, parent, source_index, shortcut, on_select, on_edit):
+    def __init__(self, parent, source_index, shortcut, on_select, on_edit, on_context=None):
         super().__init__(parent, bg=COLORS["card"], highlightthickness=1, takefocus=True, cursor="hand2")
         self.source_index = source_index
         self.on_select = on_select
         self.on_edit = on_edit
+        self.on_context = on_context
         self.selected = False
         self.hovered = False
         self.shortcut_color = normalize_shortcut_color(shortcut.get("color", ""))
@@ -490,6 +493,9 @@ class ShortcutCard(tk.Frame):
             widget.bind("<Double-Button-1>", self._edit)
             widget.bind("<Enter>", self._enter)
             widget.bind("<Leave>", self._leave)
+            if self.on_context:
+                widget.bind("<Button-3>", self._context)
+                widget.bind("<Control-Button-1>", self._context)
         self.bind("<FocusIn>", self._focus)
         self.bind("<space>", self._select)
         self.set_visual_state(False, False)
@@ -502,6 +508,11 @@ class ShortcutCard(tk.Frame):
     def _edit(self, _event=None):
         self.on_select(self.source_index)
         self.on_edit()
+        return "break"
+
+    def _context(self, event):
+        self.on_select(self.source_index)
+        self.on_context(event, self.source_index)
         return "break"
 
     def _focus(self, _event=None):
@@ -983,11 +994,6 @@ class ActionDialog(_LegacyShortcutDialog):
         self.start_error = tk.StringVar()
         ttk.Label(self.body, textvariable=self.start_error, style="Error.TLabel").grid(row=11, column=0, sticky="w", pady=(2, 0))
 
-        task_frame = ttk.Frame(self.body, style="Dialog.TFrame")
-        task_frame.grid(row=12, column=0, sticky="ew", pady=(14, 0))
-        ttk.Button(task_frame, text="Import Task XML", command=self._import_task_xml, style="Secondary.TButton").pack(side="left")
-        ttk.Button(task_frame, text="Export Task XML", command=self._export_task_xml, style="Secondary.TButton").pack(side="left", padx=(SPACE["sm"], 0))
-
         self.name.insert(0, str(self.shortcut.get("name", "")))
         self.program.insert(0, str(self.shortcut.get("program_path", "")))
         self.start.insert(0, str(self.shortcut.get("start_in", "")))
@@ -1120,14 +1126,22 @@ class ShortcutDialog(_LegacyShortcutDialog):
         self.add_action_button.pack(side="left")
         self.edit_action_button = ttk.Button(controls, text="Edit", command=self._edit_action, style="Secondary.TButton")
         self.edit_action_button.pack(side="left", padx=(SPACE["xs"], 0))
+        self.clone_action_button = ttk.Button(controls, text="Clone", command=self._clone_action, style="Secondary.TButton")
+        self.clone_action_button.pack(side="left", padx=(SPACE["xs"], 0))
         self.delete_action_button = ttk.Button(controls, text="Delete", command=self._delete_action, style="Secondary.TButton")
         self.delete_action_button.pack(side="left", padx=(SPACE["xs"], 0))
         self.up_action_button = ttk.Button(controls, text="Move up", command=lambda: self._move_action(-1), style="Secondary.TButton")
         self.up_action_button.pack(side="left", padx=(SPACE["xs"], 0))
         self.down_action_button = ttk.Button(controls, text="Move down", command=lambda: self._move_action(1), style="Secondary.TButton")
         self.down_action_button.pack(side="left", padx=(SPACE["xs"], 0))
+
+        task_frame = ttk.Frame(self.body, style="Dialog.TFrame")
+        task_frame.grid(row=10, column=0, sticky="ew", pady=(10, 0))
+        ttk.Button(task_frame, text="Import from Task Scheduler XML", command=self._import_task_xml, style="Secondary.TButton").pack(side="left")
+        ttk.Button(task_frame, text="Export as Task Scheduler XML", command=self._export_task_xml, style="Secondary.TButton").pack(side="left", padx=(SPACE["sm"], 0))
+        ttk.Label(task_frame, text="Exported tasks run actions one by one.", style="Helper.TLabel").pack(side="left", padx=(SPACE["sm"], 0))
         self.actions_error = tk.StringVar()
-        ttk.Label(self.body, textvariable=self.actions_error, style="Error.TLabel").grid(row=10, column=0, sticky="w", pady=(3, 0))
+        ttk.Label(self.body, textvariable=self.actions_error, style="Error.TLabel").grid(row=11, column=0, sticky="w", pady=(3, 0))
 
         self.name.insert(0, str(self.shortcut.get("name", "")))
         self.folder.insert(0, shortcut_folder(self.shortcut))
@@ -1160,6 +1174,7 @@ class ShortcutDialog(_LegacyShortcutDialog):
         index = self._selected_action_index()
         selected = index is not None
         self.edit_action_button.state(["!disabled"] if selected else ["disabled"])
+        self.clone_action_button.state(["!disabled"] if selected else ["disabled"])
         self.delete_action_button.state(["!disabled"] if selected and len(self.actions) > 1 else ["disabled"])
         self.up_action_button.state(["!disabled"] if selected and index > 0 else ["disabled"])
         self.down_action_button.state(["!disabled"] if selected and index < len(self.actions) - 1 else ["disabled"])
@@ -1185,6 +1200,15 @@ class ShortcutDialog(_LegacyShortcutDialog):
         except tk.TclError:
             pass
 
+    def _clone_action(self):
+        index = self._selected_action_index()
+        if index is None or not 0 <= index < len(self.actions):
+            return
+        target = index + 1
+        self.actions.insert(target, deepcopy(self.actions[index]))
+        self.actions_error.set("")
+        self._refresh_action_list(target)
+
     def _delete_action(self):
         index = self._selected_action_index()
         if index is None or len(self.actions) <= 1:
@@ -1199,6 +1223,70 @@ class ShortcutDialog(_LegacyShortcutDialog):
             return
         self.actions[index], self.actions[target] = self.actions[target], self.actions[index]
         self._refresh_action_list(target)
+
+    def _import_task_xml(self):
+        selected = filedialog.askopenfilename(
+            parent=self, title="Import Task Scheduler XML",
+            filetypes=(("Task Scheduler XML", "*.xml"), ("All files", "*.*")),
+        )
+        if not selected:
+            return
+        try:
+            with open(selected, "rb") as task_file:
+                values = parse_task_scheduler_shortcut_xml(task_file.read())
+        except (OSError, TaskSchedulerError) as error:
+            messagebox.showerror("Task Scheduler Import", str(error), parent=self)
+            return
+        self.actions = deepcopy(values["actions"])
+        self.execution_mode.set(EXECUTION_MODE_SEQUENTIAL)
+        if values["name"] and not self.name.get().strip():
+            self._replace_entry(self.name, values["name"])
+        self.actions_error.set("")
+        self._refresh_action_list(0)
+
+    def _export_task_xml(self):
+        self.name_error.set("")
+        self.actions_error.set("")
+        try:
+            values = normalize_shortcut_input(
+                self.name.get(), folder=self.folder.get(), color=self.color_var.get(),
+                execution_mode=self.execution_mode.get(), actions=self.actions,
+                existing=self.shortcut,
+            )
+            xml_text = build_task_scheduler_shortcut_xml(
+                values["name"], values["actions"],
+            )
+        except (ValidationError, TaskSchedulerError) as error:
+            if isinstance(error, ValidationError) and error.field == "name":
+                self.name_error.set(str(error))
+                self.name.focus_set()
+            else:
+                self.actions_error.set(str(error))
+                self.action_list.focus_set()
+            return
+        safe_name = "".join(
+            character if character.isalnum() or character in "-_ " else "_"
+            for character in values["name"]
+        ).strip() or "FlashCMD Task"
+        destination = filedialog.asksaveasfilename(
+            parent=self, title="Export Task Scheduler XML",
+            defaultextension=".xml", initialfile=f"{safe_name}.xml",
+            filetypes=(("Task Scheduler XML", "*.xml"), ("All files", "*.*")),
+        )
+        if not destination:
+            return
+        try:
+            with open(destination, "w", encoding="utf-8", newline="\n") as task_file:
+                task_file.write(xml_text)
+                task_file.write("\n")
+        except OSError as error:
+            messagebox.showerror("Task Scheduler Export", str(error), parent=self)
+            return
+        messagebox.showinfo(
+            "Task Scheduler Export",
+            f"Exported {len(values['actions'])} actions to:\n{destination}",
+            parent=self,
+        )
 
     def _save(self):
         self.name_error.set("")
@@ -1718,12 +1806,27 @@ class ShortcutManager:
         self.search_entry.pack(side="left")
         self.clear_search_button = ttk.Button(search_area, text="×", width=2, command=self.clear_search, style="Ghost.TButton")
         self.clear_search_button.pack(side="left", padx=(2, 0))
+        self.clone_button = ttk.Button(toolbar, text="Clone", command=self.clone, style="Secondary.TButton")
+        self.clone_button.grid(row=0, column=2, sticky="e", padx=(0, SPACE["sm"]))
         self.add_button = ttk.Button(toolbar, text="+ Add shortcut", command=self.add, style="Primary.TButton")
-        self.add_button.grid(row=0, column=2, sticky="e")
+        self.add_button.grid(row=0, column=3, sticky="e")
 
     def _build_shortcut_area(self):
         self.card_list = ScrollableCardList(self.main)
         self.card_list.grid(row=1, column=0, sticky="nsew")
+        self.shortcut_context_menu = tk.Menu(self.root, tearoff=False)
+        self.shortcut_context_menu.add_command(label="Run", command=self.run)
+        self.shortcut_context_menu.add_command(label="Edit", command=self.edit)
+        self.shortcut_context_menu.add_command(label="Clone", command=self.clone)
+        self.shortcut_context_menu.add_separator()
+        self.shortcut_context_menu.add_command(label="Delete", command=self.delete)
+
+    def _show_shortcut_context(self, event, source_index):
+        self.select_shortcut(source_index)
+        try:
+            self.shortcut_context_menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            self.shortcut_context_menu.grab_release()
 
     def _build_action_bar(self):
         action_bar = ttk.Frame(self.main, style="App.TFrame")
@@ -1823,6 +1926,7 @@ class ShortcutManager:
         for source_index, shortcut in pairs:
             card = ShortcutCard(
                 card_area, source_index, shortcut, self.select_shortcut, self.edit,
+                self._show_shortcut_context,
             )
             card.pack(fill="x", padx=(SPACE["xs"], SPACE["sm"]), pady=(0, SPACE["xs"]))
             for child in (card, *card.winfo_children()):
@@ -1878,7 +1982,7 @@ class ShortcutManager:
 
     def _update_action_states(self):
         state = ["!disabled"] if self._selected_shortcut() is not None else ["disabled"]
-        for button in (self.run_button, self.edit_button, self.delete_button):
+        for button in (self.run_button, self.edit_button, self.clone_button, self.delete_button):
             button.state(state)
 
     def _count_message(self):
@@ -1997,6 +2101,39 @@ class ShortcutManager:
         self.refresh_cards(preserve_selection=True)
         name = dialog.result.get("name", "shortcut")
         self._set_status(f"Updated {name}" if saved else "Updated locally, but changes were not saved", transient=True)
+
+    def clone(self):
+        shortcut = self._selected_shortcut()
+        if shortcut is None:
+            messagebox.showwarning(
+                "Selection Required", "Select a shortcut to clone.", parent=self.root,
+            )
+            return
+        original_name = str(shortcut.get("name", "Shortcut")).strip() or "Shortcut"
+        new_name = simpledialog.askstring(
+            "Clone Shortcut", "Enter a name for the cloned shortcut:",
+            initialvalue=f"{original_name} Copy", parent=self.root,
+        )
+        if new_name is None:
+            return
+        new_name = new_name.strip()
+        if not new_name:
+            messagebox.showwarning(
+                "Clone Shortcut", "Enter a name for the cloned shortcut.",
+                parent=self.root,
+            )
+            return
+        cloned = deepcopy(shortcut)
+        cloned["name"] = new_name
+        self.shortcuts.append(cloned)
+        self.selected_index = len(self.shortcuts) - 1
+        saved = self.save()
+        self.refresh_cards(preserve_selection=True)
+        self._set_status(
+            f"Cloned {original_name} as {new_name}"
+            if saved else "Cloned locally, but changes were not saved",
+            transient=True,
+        )
 
     def delete(self):
         shortcut = self._selected_shortcut()

@@ -432,11 +432,8 @@ def shortcut_actions_preview(shortcut, limit=3):
     return "\n".join(lines)
 
 
-def build_task_scheduler_xml(name, program_path, arguments="", working_directory=""):
-    """Build importable Task Scheduler XML containing one Exec action."""
-    command = program_path.strip() if isinstance(program_path, str) else ""
-    if not command:
-        raise TaskSchedulerError("Task Scheduler actions require a program or script.")
+def _task_scheduler_root(name):
+    """Build the common Task Scheduler document around its Actions element."""
     ET.register_namespace("", TASK_SCHEDULER_NAMESPACE)
     tag = lambda value: f"{{{TASK_SCHEDULER_NAMESPACE}}}{value}"
     root = ET.Element(tag("Task"), {"version": "1.4"})
@@ -459,21 +456,63 @@ def build_task_scheduler_xml(name, program_path, arguments="", working_directory
         ("ExecutionTimeLimit", "PT0S"), ("Priority", "7"),
     ):
         ET.SubElement(settings, tag(key)).text = value
-    actions = ET.SubElement(root, tag("Actions"), {"Context": "Author"})
-    execute = ET.SubElement(actions, tag("Exec"))
-    ET.SubElement(execute, tag("Command")).text = command
-    clean_arguments = str(arguments).strip()
-    if clean_arguments:
-        ET.SubElement(execute, tag("Arguments")).text = clean_arguments
-    clean_directory = str(working_directory).strip()
-    if clean_directory:
-        ET.SubElement(execute, tag("WorkingDirectory")).text = clean_directory
+    return root, ET.SubElement(root, tag("Actions"), {"Context": "Author"}), tag
+
+
+def _task_action_id(name, index, used):
+    clean = "_".join(str(name).strip().split())
+    clean = "".join(character for character in clean if character.isalnum() or character in "_.-")
+    if not clean or not (clean[0].isalpha() or clean[0] == "_"):
+        clean = f"Action_{index + 1}"
+    candidate = clean
+    suffix = 2
+    while candidate in used:
+        candidate = f"{clean}_{suffix}"
+        suffix += 1
+    used.add(candidate)
+    return candidate
+
+
+def build_task_scheduler_shortcut_xml(name, actions):
+    """Build Task Scheduler XML containing every FlashCMD action in order."""
+    if not isinstance(actions, (list, tuple)) or not actions:
+        raise TaskSchedulerError("Task Scheduler export requires at least one action.")
+    root, actions_element, tag = _task_scheduler_root(name)
+    used_ids = set()
+    for index, raw_action in enumerate(actions):
+        try:
+            action = normalize_action_input(raw_action)
+        except ValidationError as error:
+            raise TaskSchedulerError(f"Action {index + 1}: {error}") from error
+        execute = ET.SubElement(actions_element, tag("Exec"), {
+            "id": _task_action_id(action["name"], index, used_ids),
+        })
+        if shortcut_action_mode(action) == ACTION_MODE_PROGRAM:
+            command = action["program_path"]
+            arguments = action.get("arguments", "")
+        else:
+            command = "cmd.exe"
+            arguments = subprocess.list2cmdline(["/d", "/c", action["command"]])
+        ET.SubElement(execute, tag("Command")).text = command
+        if arguments:
+            ET.SubElement(execute, tag("Arguments")).text = arguments
+        if action.get("start_in"):
+            ET.SubElement(execute, tag("WorkingDirectory")).text = action["start_in"]
     ET.indent(root, space="  ")
     return ET.tostring(root, encoding="unicode", xml_declaration=True)
 
 
-def parse_task_scheduler_xml(xml_text):
-    """Parse one Task Scheduler Exec action into FlashCMD program fields."""
+def build_task_scheduler_xml(name, program_path, arguments="", working_directory=""):
+    """Backward-compatible single Program/Script Task Scheduler export."""
+    return build_task_scheduler_shortcut_xml(name, [{
+        "name": str(name).strip() or "Action 1",
+        "action_mode": ACTION_MODE_PROGRAM,
+        "program_path": program_path, "arguments": arguments,
+        "start_in": working_directory,
+    }])
+
+
+def _parse_task_scheduler_document(xml_text):
     if not isinstance(xml_text, (str, bytes)):
         raise TaskSchedulerError("Task Scheduler XML must be text or bytes.")
     probe = xml_text.decode("utf-8", "ignore") if isinstance(xml_text, bytes) else xml_text
@@ -484,6 +523,39 @@ def parse_task_scheduler_xml(xml_text):
     except ET.ParseError as error:
         raise TaskSchedulerError(f"Invalid Task Scheduler XML: {error}") from error
     local_name = lambda element: element.tag.rsplit("}", 1)[-1]
+    return root, local_name
+
+
+def parse_task_scheduler_shortcut_xml(xml_text):
+    """Parse every Task Scheduler Exec action into one shortcut projection."""
+    root, local_name = _parse_task_scheduler_document(xml_text)
+    execute_elements = [element for element in root.iter() if local_name(element) == "Exec"]
+    if not execute_elements:
+        raise TaskSchedulerError("Task Scheduler XML must contain at least one Exec action.")
+    descriptions = [
+        (element.text or "").strip() for element in root.iter()
+        if local_name(element) == "Description" and (element.text or "").strip()
+    ]
+    actions = []
+    for index, execute in enumerate(execute_elements):
+        values = {local_name(child): (child.text or "").strip() for child in execute}
+        if not values.get("Command"):
+            raise TaskSchedulerError(
+                f"Task Scheduler Exec action {index + 1} has no Command.",
+            )
+        actions.append({
+            "name": execute.get("id") or execute.get("Id") or f"Action {index + 1}",
+            "action_mode": ACTION_MODE_PROGRAM,
+            "program_path": values["Command"],
+            "arguments": values.get("Arguments", ""),
+            "start_in": values.get("WorkingDirectory", ""),
+        })
+    return {"name": descriptions[0] if descriptions else "", "actions": actions}
+
+
+def parse_task_scheduler_xml(xml_text):
+    """Parse one Task Scheduler Exec action into FlashCMD program fields."""
+    root, local_name = _parse_task_scheduler_document(xml_text)
     actions = [element for element in root.iter() if local_name(element) == "Exec"]
     if len(actions) != 1:
         raise TaskSchedulerError("Task Scheduler XML must contain exactly one Exec action.")

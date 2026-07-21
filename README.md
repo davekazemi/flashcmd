@@ -7,6 +7,8 @@ organize, and launch ordered groups of commands or programs without retyping
 them every time.
 </p>
 
+<p style="text-align: center"><strong>Current release: 0.1.0</strong></p>
+
 
 
 
@@ -17,27 +19,12 @@ them every time.
 ## What FlashCMD does
 - Save each shortcut as one or more named Command Line or Program/Script actions
 - Reorder actions and run them **One by one** or **All at once**
+- Clone complete shortcuts or individual actions to create variations quickly
 - Organize shortcuts into collapsible folders
 - Search, edit, delete, and run saved shortcuts quickly
-- Import and export Program/Script actions as Task Scheduler XML
+- Import and export complete ordered shortcuts as Task Scheduler XML
 - Restore the app from the tray or background using a configurable hotkey
 - Keep a single running instance so repeated launches restore the same window
-- Shortcuts can contain multiple named actions instead of only one command or
-  program
-- Actions can be added, edited, deleted, and reordered in the shortcut editor
-- **One by one** execution waits for each action to finish and continues after
-  failures; **All at once** launches every action before monitoring results
-- Windows Terminal command actions open as individually named and colored tabs
-  in one new window per shortcut run
-- Program/Script actions continue to launch directly as external processes
-- Completion tracking now reports individual exit codes, launch errors, missing
-  working directories, start timeouts, and cancellation caused by app shutdown
-- Multiple shortcut runs can overlap without sharing Terminal window identifiers
-  or result files
-- Existing single-action shortcuts remain readable and migrate only after they
-  are edited and successfully saved
-- Search and shortcut cards now include action names, action details, action
-  count, order, and execution mode
 
 ![FlashCMD](https://storage.googleapis.com/general-geosynk/flashcmd/FlashCMD.png)
 
@@ -45,6 +32,21 @@ them every time.
 
 Download the latest FlashCMD release for Windows or macOS from
 [GitHub Releases](https://github.com/davekazemi/flashcmd/releases).
+
+## Version 0.1.0 highlights
+
+- Ordered shortcuts containing multiple named Command Line and Program/Script
+  actions
+- Action editing, deletion, reordering, and independent cloning
+- Complete shortcut cloning with a prompted name and independent copied data
+- **One by one** and **All at once** execution with per-action completion and
+  aggregated failure reporting
+- One uniquely identified Windows Terminal window per run, with named and
+  colored command tabs when `wt.exe` is available
+- Direct Program/Script launching and usable native-console fallback behavior
+- Overlapping runs with independent window identifiers and result files
+- Complete ordered Task Scheduler XML import and export
+- Lazy compatibility for older single-action shortcut records
 
 ## Creating and running a shortcut
 
@@ -81,8 +83,14 @@ child finished; a command that deliberately starts or daemonizes another process
 may therefore be considered complete while that detached process is still
 running.
 
-Task Scheduler XML import and export applies to the selected Program/Script
-action only.
+Task Scheduler XML import reads every `Exec` entry in order and creates one
+Program/Script action for each entry. An `Exec` `id` becomes the action name when
+present; otherwise FlashCMD uses `Action 1`, `Action 2`, and so on.
+
+Task Scheduler XML export writes every shortcut action in order. Program/Script
+actions map directly to `Exec` entries. Command Line actions are exported as
+`cmd.exe /d /c` entries. Task Scheduler runs the exported actions one by one, so
+an **All at once** FlashCMD shortcut is exported using sequential task semantics.
 
 ## Terminal behavior
 
