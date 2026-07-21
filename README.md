@@ -1,18 +1,24 @@
-![FlashCMD](https://storage.googleapis.com/general-geosynk/images/FlashCMD.png)
-
 # FlashCMD
 
 FlashCMD is a desktop shortcut manager for Windows and macOS. It helps you save,
 organize, and launch commands or programs without retyping them every time.
 
-## What FlashCMD does
 
+<p align="center">
+  <img
+    src="https://storage.googleapis.com/general-geosynk/flash.png
+</p>
+
+
+## What FlashCMD does
 - Save shortcuts for command-line actions or direct program/script launches
 - Organize shortcuts into collapsible folders
 - Search, edit, delete, and run saved shortcuts quickly
 - Import and export Program/Script actions as Task Scheduler XML
 - Restore the app from the tray or background using a configurable hotkey
 - Keep a single running instance so repeated launches restore the same window
+
+![FlashCMD](https://storage.googleapis.com/general-geosynk/flashcmd/FlashCMD.png)
 
 ## Supported platforms
 
@@ -59,5 +65,5 @@ build output, and internal documentation out of public commits.
 If FlashCMD is useful to you, you can support it here:
 
 <a href="https://buymeacoffee.com/davoodkazemi" target="_blank" rel="noopener noreferrer">
-  <img src="https://storage.googleapis.com/general-geosynk/images/bmc.png" alt="Buy Me a Coffee">
+  <img src="https://storage.googleapis.com/general-geosynk/flashcmd/bmc.png" alt="Buy Me a Coffee">
 </a>
