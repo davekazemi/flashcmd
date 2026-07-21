@@ -58,4 +58,6 @@ build output, and internal documentation out of public commits.
 
 If FlashCMD is useful to you, you can support it here:
 
-[![Buy Me a Coffee](https://storage.googleapis.com/general-geosynk/images/bmc.png)](https://buymeacoffee.com/davoodkazemi)
+<a href="https://buymeacoffee.com/davoodkazemi" target="_blank" rel="noopener noreferrer">
+  <img src="https://storage.googleapis.com/general-geosynk/images/bmc.png" alt="Buy Me a Coffee">
+</a>

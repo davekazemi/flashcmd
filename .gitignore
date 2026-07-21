@@ -22,6 +22,9 @@ dist/
 *.mobileprovision
 release/*
 !release/.gitkeep
+!release/README-*.md
 tests/*
 docs/
+release
+
 
