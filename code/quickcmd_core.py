@@ -56,18 +56,26 @@ def default_settings(platform=None):
 DEFAULT_SETTINGS = default_settings()
 
 
+def _source_base_dir(module_file):
+    """Return the repository root when source modules live in ``code/``."""
+    module_dir = os.path.dirname(os.path.abspath(os.fspath(module_file)))
+    if os.path.basename(module_dir).casefold() == "code":
+        return os.path.dirname(module_dir)
+    return module_dir
+
+
 def resource_base_dir(module_file=__file__, sys_module=sys):
     """Return the source or PyInstaller extraction directory for assets."""
     if getattr(sys_module, "frozen", False) and getattr(sys_module, "_MEIPASS", None):
         return os.path.abspath(os.fspath(sys_module._MEIPASS))
-    return os.path.dirname(os.path.abspath(os.fspath(module_file)))
+    return _source_base_dir(module_file)
 
 
 def executable_base_dir(module_file=__file__, sys_module=sys):
     """Return the source or frozen executable directory for legacy files."""
     if getattr(sys_module, "frozen", False):
         return os.path.dirname(os.path.abspath(os.fspath(sys_module.executable)))
-    return os.path.dirname(os.path.abspath(os.fspath(module_file)))
+    return _source_base_dir(module_file)
 
 
 def user_config_path(local_app_data=None, app_name=APP_STORAGE_NAME, platform=None, home=None):
