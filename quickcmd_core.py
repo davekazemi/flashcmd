@@ -15,6 +15,8 @@ import xml.etree.ElementTree as ET
 PREVIEW_LINE_LENGTH = 100
 ACTION_MODE_COMMAND_LINE = "command_line"
 ACTION_MODE_PROGRAM = "program"
+EXECUTION_MODE_SEQUENTIAL = "sequential"
+EXECUTION_MODE_PARALLEL = "parallel"
 GENERAL_FOLDER = "General"
 TASK_SCHEDULER_NAMESPACE = "http://schemas.microsoft.com/windows/2004/02/mit/task"
 APP_STORAGE_NAME = "FlashCMD"
@@ -154,6 +156,18 @@ def normalize_folder(folder):
     return clean
 
 
+def normalize_shortcut_color(color):
+    """Return an uppercase #RRGGBB shortcut color, or blank if invalid."""
+    clean = color.strip().upper() if isinstance(color, str) else ""
+    if len(clean) != 7 or not clean.startswith("#"):
+        return ""
+    try:
+        int(clean[1:], 16)
+    except ValueError:
+        return ""
+    return clean
+
+
 def normalize_restore_hotkey_setting(value):
     """Store restore hotkeys as a simple trimmed string or disable them."""
     return value.strip() if isinstance(value, str) else ""
@@ -176,6 +190,14 @@ def normalize_config(raw, platform=None):
     if any(not isinstance(shortcut, dict) for shortcut in shortcuts):
         raise ConfigError("Every shortcut must be an object.")
 
+    normalized_shortcuts = deepcopy(shortcuts)
+    for shortcut in normalized_shortcuts:
+        color = normalize_shortcut_color(shortcut.get("color", ""))
+        if color:
+            shortcut["color"] = color
+        else:
+            shortcut.pop("color", None)
+
     normalized_settings = default_settings(platform)
     normalized_settings.update(deepcopy(settings))
     normalized_settings.pop("terminal_args", None)
@@ -183,7 +205,7 @@ def normalize_config(raw, platform=None):
         normalized_settings.get("restore_hotkey", ""),
     )
     return {
-        "shortcuts": deepcopy(shortcuts),
+        "shortcuts": normalized_shortcuts,
         "settings": normalized_settings,
     }
 
@@ -223,35 +245,151 @@ def save_config(path, shortcuts, settings):
                 pass
 
 
-def normalize_shortcut_input(
-    name, command, start_in, action_mode=ACTION_MODE_COMMAND_LINE,
-    program_path="", arguments="", folder=GENERAL_FOLDER,
+def normalize_action_input(
+    action=None, name="", action_mode=ACTION_MODE_COMMAND_LINE, command="",
+    program_path="", arguments="", start_in="",
 ):
-    """Normalize user-entered shortcut fields and validate required values."""
+    """Return one validated, detached action using only current action fields."""
+    source = action if isinstance(action, dict) else {}
+    raw_name = source.get("name", name)
+    clean_name = raw_name.strip() if isinstance(raw_name, str) else ""
+    mode = source.get("action_mode", action_mode)
+    clean_command = _normalize_newlines(
+        source.get("command", command) if isinstance(source.get("command", command), str) else ""
+    ).strip()
+    clean_start = source.get("start_in", start_in)
+    clean_start = clean_start.strip() if isinstance(clean_start, str) else ""
+    clean_program = source.get("program_path", program_path)
+    clean_program = clean_program.strip() if isinstance(clean_program, str) else ""
+    clean_arguments = source.get("arguments", arguments)
+    clean_arguments = _normalize_newlines(clean_arguments).strip() if isinstance(clean_arguments, str) else ""
+    if not clean_name:
+        raise ValidationError("Enter an action name.", "name")
+    if mode == ACTION_MODE_PROGRAM:
+        if not clean_program:
+            raise ValidationError("Enter a program or script to run.", "program_path")
+        return {
+            "name": clean_name, "action_mode": ACTION_MODE_PROGRAM,
+            "program_path": clean_program, "arguments": clean_arguments,
+            "start_in": clean_start,
+        }
+    if mode != ACTION_MODE_COMMAND_LINE:
+        raise ValidationError("Choose a supported action type.", "action_mode")
+    if not clean_command:
+        raise ValidationError("Enter a command to run.", "command")
+    return {
+        "name": clean_name, "action_mode": ACTION_MODE_COMMAND_LINE,
+        "command": clean_command, "start_in": clean_start,
+    }
+
+
+def shortcut_execution_mode(shortcut):
+    """Return a valid execution mode, defaulting legacy values to sequential."""
+    if isinstance(shortcut, dict) and shortcut.get("execution_mode") == EXECUTION_MODE_PARALLEL:
+        return EXECUTION_MODE_PARALLEL
+    return EXECUTION_MODE_SEQUENTIAL
+
+
+def shortcut_actions(shortcut):
+    """Return validated detached actions, lazily projecting one legacy action."""
+    if not isinstance(shortcut, dict):
+        raise ValidationError("Shortcut data must be an object.", "actions")
+    if "actions" not in shortcut:
+        legacy = {
+            "name": str(shortcut.get("name", "")).strip(),
+            "action_mode": shortcut_action_mode(shortcut),
+            "start_in": shortcut.get("start_in", ""),
+        }
+        if legacy["action_mode"] == ACTION_MODE_PROGRAM:
+            legacy.update({
+                "program_path": shortcut.get("program_path", ""),
+                "arguments": shortcut.get("arguments", ""),
+            })
+        else:
+            legacy["command"] = shortcut.get("command", "")
+        return [normalize_action_input(legacy)]
+    actions = shortcut.get("actions")
+    if not isinstance(actions, list) or not actions:
+        raise ValidationError("Add at least one action.", "actions")
+    normalized = []
+    for index, action in enumerate(actions):
+        if not isinstance(action, dict):
+            raise ValidationError(
+                f"Action {index + 1} must be an object.", f"actions[{index}]",
+            )
+        try:
+            normalized.append(normalize_action_input(action))
+        except ValidationError as error:
+            raise ValidationError(
+                f"Action {index + 1}: {error}", f"actions[{index}].{error.field or 'action'}",
+            ) from error
+    return normalized
+
+
+def normalize_shortcut_input(
+    name, command="", start_in="", action_mode=ACTION_MODE_COMMAND_LINE,
+    program_path="", arguments="", folder=GENERAL_FOLDER, color="",
+    execution_mode=EXECUTION_MODE_SEQUENTIAL, actions=None, existing=None,
+):
+    """Normalize shortcut fields; ``actions`` opts into the current schema."""
     clean_name = name.strip() if isinstance(name, str) else ""
     clean_command = _normalize_newlines(command).strip() if isinstance(command, str) else ""
     clean_start = start_in.strip() if isinstance(start_in, str) else ""
     clean_program = program_path.strip() if isinstance(program_path, str) else ""
     clean_arguments = _normalize_newlines(arguments).strip() if isinstance(arguments, str) else ""
     clean_folder = normalize_folder(folder)
+    clean_color = normalize_shortcut_color(color)
     if not clean_name:
         raise ValidationError("Enter a shortcut name.", "name")
+    if actions is not None:
+        if execution_mode not in (EXECUTION_MODE_SEQUENTIAL, EXECUTION_MODE_PARALLEL):
+            raise ValidationError("Choose a supported execution mode.", "execution_mode")
+        if not isinstance(actions, list) or not actions:
+            raise ValidationError("Add at least one action.", "actions")
+        normalized_actions = []
+        for index, action in enumerate(actions):
+            try:
+                normalized_actions.append(normalize_action_input(action))
+            except ValidationError as error:
+                raise ValidationError(
+                    f"Action {index + 1}: {error}",
+                    f"actions[{index}].{error.field or 'action'}",
+                ) from error
+        values = deepcopy(existing) if isinstance(existing, dict) else {}
+        for key in (
+            "action_mode", "command", "program_path", "arguments", "start_in",
+            "name", "folder", "color", "actions", "execution_mode",
+        ):
+            values.pop(key, None)
+        values.update({
+            "name": clean_name, "folder": clean_folder,
+            "execution_mode": execution_mode, "actions": normalized_actions,
+        })
+        if clean_color:
+            values["color"] = clean_color
+        return values
     if action_mode == ACTION_MODE_PROGRAM:
         if not clean_program:
             raise ValidationError("Enter a program or script to run.", "program_path")
-        return {
+        values = {
             "name": clean_name, "action_mode": ACTION_MODE_PROGRAM,
             "program_path": clean_program, "arguments": clean_arguments,
             "start_in": clean_start, "folder": clean_folder,
         }
+        if clean_color:
+            values["color"] = clean_color
+        return values
     if action_mode != ACTION_MODE_COMMAND_LINE:
         raise ValidationError("Choose a supported action type.", "action_mode")
     if not clean_command:
         raise ValidationError("Enter a command to run.", "command")
-    return {
+    values = {
         "name": clean_name, "action_mode": ACTION_MODE_COMMAND_LINE,
         "command": clean_command, "start_in": clean_start, "folder": clean_folder,
     }
+    if clean_color:
+        values["color"] = clean_color
+    return values
 
 
 def shortcut_action_mode(shortcut):
@@ -272,6 +410,26 @@ def shortcut_command(shortcut, platform=None):
         if current_platform(platform) == "windows" else shlex.quote(program)
     )
     return f"{executable} {arguments}" if arguments else executable
+
+
+def action_preview(action):
+    """Return a bounded type-relevant preview for one action."""
+    if shortcut_action_mode(action) == ACTION_MODE_PROGRAM:
+        return command_preview(shortcut_command(action))
+    return command_preview(action.get("command", ""))
+
+
+def shortcut_actions_preview(shortcut, limit=3):
+    """Summarize ordered action names without flattening their commands."""
+    actions = shortcut_actions(shortcut)
+    count = max(1, int(limit))
+    lines = [
+        f"{index + 1}. {action['name']} ({'Program' if shortcut_action_mode(action) == ACTION_MODE_PROGRAM else 'Command'})"
+        for index, action in enumerate(actions[:count])
+    ]
+    if len(actions) > count:
+        lines.append(f"+{len(actions) - count} more")
+    return "\n".join(lines)
 
 
 def build_task_scheduler_xml(name, program_path, arguments="", working_directory=""):
@@ -371,12 +529,19 @@ def filter_shortcuts(shortcuts, query):
     pairs = list(enumerate(shortcuts))
     if not needle:
         return pairs
-    fields = ("name", "command", "program_path", "arguments", "start_in")
-    return [
-        (index, shortcut) for index, shortcut in pairs
-        if any(needle in str(shortcut.get(field, "")).casefold() for field in fields)
-        or needle in shortcut_folder(shortcut).casefold()
-    ]
+    fields = ("name", "command", "program_path", "arguments", "start_in", "action_mode")
+    result = []
+    for index, shortcut in pairs:
+        values = [shortcut.get(field, "") for field in fields]
+        values.append(shortcut_folder(shortcut))
+        try:
+            for action in shortcut_actions(shortcut):
+                values.extend(action.get(field, "") for field in fields)
+        except ValidationError:
+            pass
+        if any(needle in str(value).casefold() for value in values):
+            result.append((index, shortcut))
+    return result
 
 
 def command_preview(command):
