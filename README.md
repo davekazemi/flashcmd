@@ -9,7 +9,7 @@ organize, and launch commands or programs without retyping them every time.
 
 
 
-<p style="text-align: center"><img src="https://storage.googleapis.com/general-geosynk/flashcmd/icon-badge-200.png">
+<p style="text-align: center"><img src="https://storage.googleapis.com/general-geosynk/flashcmd/main-logo-dark.png">
 </p>
 
 
@@ -22,6 +22,11 @@ organize, and launch commands or programs without retyping them every time.
 - Keep a single running instance so repeated launches restore the same window
 
 ![FlashCMD](https://storage.googleapis.com/general-geosynk/flashcmd/FlashCMD.png)
+
+## Download
+
+Download the latest FlashCMD release for Windows or macOS from
+[GitHub Releases](https://github.com/davekazemi/flashcmd/releases).
 
 ## Supported platforms
 
