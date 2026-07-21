@@ -26,5 +26,8 @@ release/*
 tests/*
 docs/
 release
+scripts
+installer
+packaging
 
 
