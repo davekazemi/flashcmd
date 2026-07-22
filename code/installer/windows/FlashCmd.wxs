@@ -1,0 +1,97 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs"
+     xmlns:ui="http://wixtoolset.org/schemas/v4/wxs/ui">
+  <Package Name="FlashCMD" Manufacturer="FlashCMD"
+           Version="$(var.ProductVersion)"
+           UpgradeCode="9A01663B-A6B0-4B11-9367-82FFAE8B92DF"
+           Scope="perUser" Compressed="yes">
+    <MajorUpgrade AllowSameVersionUpgrades="yes"
+                  DowngradeErrorMessage="A newer FlashCMD version is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <WixVariable Id="WixUILicenseRtf" Value="code/installer/windows/FlashCMD-License.rtf" />
+    <Property Id="ADD_TO_STARTUP" Secure="yes">
+      <RegistrySearch Id="RememberStartupOption" Root="HKCU"
+                      Key="Software\FlashCMD\Installer" Name="AddToStartup"
+                      Type="raw" />
+    </Property>
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOX" Value="1" />
+    <Property Id="WIXUI_EXITDIALOGOPTIONALCHECKBOXTEXT" Value="Open FlashCMD now" />
+    <Property Id="WixShellExecTarget" Value="[#FlashCmdExe]" />
+    <CustomAction Id="LaunchApplication"
+                  BinaryRef="Wix4UtilCA_$(sys.BUILDARCHSHORT)"
+                  DllEntry="WixShellExec"
+                  Impersonate="yes" />
+
+    <UI Id="FlashCmdInstallerUI">
+      <ui:WixUI Id="WixUI_Minimal" />
+      <Dialog Id="StartupOptionsDlg" Width="370" Height="270" Title="FlashCMD Setup">
+        <Control Id="Title" Type="Text" X="15" Y="10" Width="340" Height="30"
+                 Transparent="yes" NoPrefix="yes" Text="Install FlashCMD" />
+        <Control Id="Description" Type="Text" X="20" Y="55" Width="330" Height="30"
+                 Text="Choose whether FlashCMD should open automatically when you sign in." />
+        <Control Id="AddToStartup" Type="CheckBox" X="20" Y="100" Width="330" Height="18"
+                 Property="ADD_TO_STARTUP" CheckBoxValue="1"
+                 Text="Add FlashCMD to startup" />
+        <Control Id="Back" Type="PushButton" X="180" Y="243" Width="56" Height="17"
+                 Disabled="yes" Text="Back" />
+        <Control Id="Next" Type="PushButton" X="236" Y="243" Width="56" Height="17"
+                 Default="yes" Text="Next">
+          <Publish Event="NewDialog" Value="WelcomeEulaDlg" />
+        </Control>
+        <Control Id="Cancel" Type="PushButton" X="304" Y="243" Width="56" Height="17"
+                 Cancel="yes" Text="Cancel">
+          <Publish Event="SpawnDialog" Value="CancelDlg" />
+        </Control>
+      </Dialog>
+      <Publish Dialog="ExitDialog"
+               Control="Finish"
+               Event="DoAction"
+               Value="LaunchApplication"
+               Condition="WIXUI_EXITDIALOGOPTIONALCHECKBOX = 1 AND NOT Installed" />
+    </UI>
+
+    <InstallUISequence>
+      <Show Dialog="StartupOptionsDlg" Before="WelcomeEulaDlg" Condition="NOT Installed" />
+    </InstallUISequence>
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="LocalProgramsFolder" Name="Programs">
+        <Directory Id="INSTALLFOLDER" Name="FlashCMD">
+          <Component Id="ApplicationFiles" Guid="6A6B5251-2F79-40B9-BFB8-4A1E7A6A4D0E">
+            <File Id="FlashCmdExe" Source="$(var.SourceExe)" Name="FlashCMD.exe" />
+            <RegistryValue Root="HKCU" Key="Software\FlashCMD\Installer"
+                           Name="ApplicationFiles" Type="integer" Value="1" KeyPath="yes" />
+            <RemoveRegistryKey Root="HKCU" Key="Software\FlashCMD\Installer"
+                               Action="removeOnUninstall" />
+            <RemoveFolder Id="RemoveInstallFolder" Directory="INSTALLFOLDER" On="uninstall" />
+            <RemoveFolder Id="RemoveLocalProgramsFolder" Directory="LocalProgramsFolder" On="uninstall" />
+          </Component>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Component Id="StartMenuShortcut" Guid="1FB4F1C7-FA7B-4D7B-8D1A-8E60898A18AA">
+        <Shortcut Id="FlashCmdStartMenu" Name="FlashCMD"
+                  Target="[INSTALLFOLDER]FlashCMD.exe" WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKCU" Key="Software\FlashCMD\Installer" Name="StartMenuShortcut"
+                       Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <StandardDirectory Id="StartupFolder">
+      <Component Id="StartupShortcut" Guid="E98DA763-A070-4AD0-A627-49139F98F421"
+                 Condition="ADD_TO_STARTUP = 1" Transitive="yes">
+        <Shortcut Id="FlashCmdStartup" Name="FlashCMD"
+                  Target="[INSTALLFOLDER]FlashCMD.exe" WorkingDirectory="INSTALLFOLDER" />
+        <RegistryValue Root="HKCU" Key="Software\FlashCMD\Installer"
+                       Name="AddToStartup" Type="integer" Value="1" KeyPath="yes" />
+      </Component>
+    </StandardDirectory>
+
+    <Feature Id="MainFeature" Title="FlashCMD" Level="1">
+      <ComponentRef Id="ApplicationFiles" />
+      <ComponentRef Id="StartMenuShortcut" />
+      <ComponentRef Id="StartupShortcut" />
+    </Feature>
+  </Package>
+</Wix>

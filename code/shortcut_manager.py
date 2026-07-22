@@ -1,14 +1,25 @@
+import sys
+
+from flashcmd_version import APP_NAME, __version__
+
+
+if __name__ == "__main__" and sys.argv[1:] == ["--version"]:
+    if sys.stdout is not None:
+        print(f"{APP_NAME} {__version__}")
+    raise SystemExit(0)
+
+
 from json import JSONDecodeError
 from copy import deepcopy
 import hashlib
 import importlib
+import json
 import ntpath
 import os
 import posixpath
 import queue
 import shutil
 import socket
-import sys
 import threading
 import tkinter as tk
 import uuid
@@ -24,7 +35,6 @@ else:
     ctypes = pystray = None
 
 from flashcmd_launcher import launch_program, launch_shortcut
-from flashcmd_version import APP_NAME, __version__
 from quickcmd_core import (
     ACTION_MODE_COMMAND_LINE,
     ACTION_MODE_PROGRAM,
@@ -41,9 +51,11 @@ from quickcmd_core import (
     current_platform,
     executable_base_dir,
     filter_shortcuts,
+    first_action_color,
     legacy_config_candidates,
     load_config,
     normalize_shortcut_color,
+    normalize_shortcut_collection,
     normalize_action_input,
     normalize_shortcut_input,
     parse_task_scheduler_shortcut_xml,
@@ -67,7 +79,7 @@ CONFIG_CANDIDATES = legacy_config_candidates(
     platform=PLATFORM, executable_dir=EXECUTABLE_DIR,
 )
 CONFIG_FILE = CONFIG_CANDIDATES[0]
-BRANDING_DIR = os.path.join(RESOURCE_DIR, "docs", "branding")
+BRANDING_DIR = os.path.join(RESOURCE_DIR, "code", "docs", "branding")
 APP_ICON_FILE = os.path.join(BRANDING_DIR, "FlashCmd.ico")
 HEADER_ICON_FILE = os.path.join(BRANDING_DIR, "icon-badge.png")
 BMC_BUTTON_FILE = os.path.join(BRANDING_DIR, "bmc-button.png")
@@ -99,7 +111,8 @@ COLORS = {}
 FONTS = {
     "body": ("Segoe UI", 10), "small": ("Segoe UI", 9),
     "heading": ("Segoe UI", 15, "bold"), "title": ("Segoe UI", 20, "bold"),
-    "card_title": ("Segoe UI", 11, "bold"), "command": ("Consolas", 10),
+    "folder": ("Segoe UI", 11, "bold"), "card_title": ("Segoe UI", 10, "bold"),
+    "command": ("Consolas", 10),
 }
 SPACE = {"xs": 4, "sm": 8, "md": 12, "lg": 20, "xl": 24}
 INSTANCE_HOST = "127.0.0.1"
@@ -233,6 +246,19 @@ def configure_styles(root):
     style.map("Secondary.TButton", background=[("pressed", COLORS["border"]), ("active", COLORS["hover"])] , foreground=[("disabled", COLORS["disabled"])])
     style.configure("Ghost.TButton", background=COLORS["background"], foreground=COLORS["primary"], borderwidth=0, padding=(8, 7))
     style.map("Ghost.TButton", background=[("active", COLORS["primary_tint"]), ("pressed", COLORS["border"])])
+    style.configure(
+        "CompactToggle.Toolbutton",
+        background=COLORS["background"], foreground=COLORS["text"],
+        bordercolor=COLORS["border"], lightcolor=COLORS["border"],
+        darkcolor=COLORS["border"], borderwidth=1, relief="solid",
+        padding=(4, 3), font=("Segoe UI Symbol", 11),
+    )
+    style.map(
+        "CompactToggle.Toolbutton",
+        background=[("selected", COLORS["primary_tint"]), ("active", COLORS["hover"])],
+        foreground=[("selected", COLORS["primary"])],
+        bordercolor=[("selected", COLORS["primary"])],
+    )
     style.configure("Danger.TButton", background=COLORS["card"], foreground=COLORS["danger"], bordercolor="#FECACA", padding=(12, 7))
     style.map("Danger.TButton", background=[("active", COLORS["danger_surface"]), ("pressed", COLORS["danger_pressed"])], foreground=[("disabled", COLORS["disabled"])])
     style.configure("Header.TButton", background=COLORS["header_tile"], foreground=COLORS["white"], bordercolor="#334155", padding=(12, 7))
@@ -459,7 +485,10 @@ class ScrollableCardList(ttk.Frame):
 
 
 class ShortcutCard(tk.Frame):
-    def __init__(self, parent, source_index, shortcut, on_select, on_edit, on_context=None):
+    def __init__(
+        self, parent, source_index, shortcut, on_select, on_edit,
+        on_context=None, compact=False,
+    ):
         super().__init__(parent, bg=COLORS["card"], highlightthickness=1, takefocus=True, cursor="hand2")
         self.source_index = source_index
         self.on_select = on_select
@@ -467,27 +496,33 @@ class ShortcutCard(tk.Frame):
         self.on_context = on_context
         self.selected = False
         self.hovered = False
-        self.shortcut_color = normalize_shortcut_color(shortcut.get("color", ""))
+        self.compact = bool(compact)
+        self.shortcut_color = ""
         self.accent = tk.Frame(self, width=4, bg=COLORS["card"])
         self.accent.pack(side="left", fill="y")
-        content = tk.Frame(self, bg=COLORS["card"], padx=12, pady=8)
+        content = tk.Frame(self, bg=COLORS["card"], padx=12, pady=4 if self.compact else 8)
         content.pack(side="left", fill="both", expand=True)
         self.name_label = tk.Label(content, text=str(shortcut.get("name", "")), anchor="w", bg=COLORS["card"], fg=COLORS["text"], font=FONTS["card_title"])
         self.name_label.pack(fill="x")
         try:
             actions = shortcut_actions(shortcut)
+            self.shortcut_color = first_action_color(shortcut)
             preview = shortcut_actions_preview(shortcut)
         except ValidationError:
             actions, preview = [], "Invalid action list"
-        self.command_label = tk.Label(content, text=preview, anchor="w", justify="left", bg=COLORS["card"], fg=COLORS["text"], font=FONTS["command"], pady=3)
-        self.command_label.pack(fill="x")
-        details = [f"Folder: {shortcut_folder(shortcut)}"]
-        mode_label = "All at once" if shortcut_execution_mode(shortcut) == EXECUTION_MODE_PARALLEL else "One by one"
-        details.append(f"{len(actions)} action{'s' if len(actions) != 1 else ''}")
-        details.append(mode_label)
-        self.details_label = tk.Label(content, text="  •  ".join(details), anchor="w", bg=COLORS["card"], fg=COLORS["secondary"], font=FONTS["small"])
-        self.details_label.pack(fill="x")
-        self._colored_widgets = (content, self.name_label, self.command_label, self.details_label)
+        self.command_label = self.details_label = None
+        colored_widgets = [content, self.name_label]
+        if not self.compact:
+            self.command_label = tk.Label(content, text=preview, anchor="w", justify="left", bg=COLORS["card"], fg=COLORS["text"], font=FONTS["command"], pady=3)
+            self.command_label.pack(fill="x")
+            details = [f"Folder: {shortcut_folder(shortcut)}"]
+            mode_label = "All at once" if shortcut_execution_mode(shortcut) == EXECUTION_MODE_PARALLEL else "One by one"
+            details.append(f"{len(actions)} action{'s' if len(actions) != 1 else ''}")
+            details.append(mode_label)
+            self.details_label = tk.Label(content, text="  •  ".join(details), anchor="w", bg=COLORS["card"], fg=COLORS["secondary"], font=FONTS["small"])
+            self.details_label.pack(fill="x")
+            colored_widgets.extend((self.command_label, self.details_label))
+        self._colored_widgets = tuple(colored_widgets)
         for widget in (self, self.accent, *self._colored_widgets):
             widget.bind("<Button-1>", self._select)
             widget.bind("<Double-Button-1>", self._edit)
@@ -994,6 +1029,23 @@ class ActionDialog(_LegacyShortcutDialog):
         self.start_error = tk.StringVar()
         ttk.Label(self.body, textvariable=self.start_error, style="Error.TLabel").grid(row=11, column=0, sticky="w", pady=(2, 0))
 
+        ttk.Label(self.body, text="Action color", style="Dialog.TLabel", font=("Segoe UI", 10, "bold")).grid(row=12, column=0, sticky="w", pady=(14, 0))
+        ttk.Label(self.body, text="Used for this action's Windows Terminal tab and the shortcut card accent.", style="Helper.TLabel").grid(row=13, column=0, sticky="w", pady=(2, 6))
+        self.color_var = tk.StringVar(value=normalize_shortcut_color(self.shortcut.get("color", "")))
+        color_frame = tk.Frame(self.body, bg=COLORS["card"])
+        color_frame.grid(row=14, column=0, sticky="w")
+        self.color_preview = tk.Button(
+            color_frame, command=self._choose_action_color, width=14,
+            font=("Segoe UI", 9, "bold"), padx=8, pady=5, cursor="hand2",
+        )
+        self.color_preview.pack(side="left")
+        self.clear_color_button = ttk.Button(
+            color_frame, text="Clear", command=self._clear_action_color,
+            style="Secondary.TButton",
+        )
+        self.clear_color_button.pack(side="left", padx=(SPACE["sm"], 0))
+        self._update_color_preview()
+
         self.name.insert(0, str(self.shortcut.get("name", "")))
         self.program.insert(0, str(self.shortcut.get("program_path", "")))
         self.start.insert(0, str(self.shortcut.get("start_in", "")))
@@ -1017,6 +1069,20 @@ class ActionDialog(_LegacyShortcutDialog):
             "command": self.cmd, "start_in": self.start,
         }.get(self.focus_field, self.name)
 
+    def _choose_action_color(self):
+        initial = normalize_shortcut_color(self.color_var.get()) or PRIMARY_COLORS["blue"][1]
+        _rgb, selected = colorchooser.askcolor(
+            color=initial, parent=self, title="Choose action color",
+        )
+        selected = normalize_shortcut_color(selected)
+        if selected:
+            self.color_var.set(selected)
+            self._update_color_preview()
+
+    def _clear_action_color(self):
+        self.color_var.set("")
+        self._update_color_preview()
+
     def _save(self):
         self.name_error.set("")
         self.command_error.set("")
@@ -1029,6 +1095,7 @@ class ActionDialog(_LegacyShortcutDialog):
                 program_path=self.program.get(),
                 arguments=self.cmd.get("1.0", "end-1c"),
                 start_in=self.start.get(),
+                color=self.color_var.get(),
             )
         except ValidationError as error:
             targets = {"name": self.name, "program_path": self.program, "command": self.cmd}
@@ -1070,7 +1137,7 @@ class ShortcutDialog(_LegacyShortcutDialog):
 
     def _build(self):
         self.body.columnconfigure(0, weight=1)
-        self.body.rowconfigure(8, weight=1)
+        self.body.rowconfigure(6, weight=1)
         ttk.Label(self.body, text="Name", style="Dialog.TLabel", font=("Segoe UI", 10, "bold")).grid(row=0, column=0, sticky="w")
         self.name = ttk.Entry(self.body, style="Dialog.TEntry")
         self.name.grid(row=1, column=0, sticky="ew", pady=(5, 0))
@@ -1090,20 +1157,10 @@ class ShortcutDialog(_LegacyShortcutDialog):
         ttk.Radiobutton(mode_frame, text="One by one", value=EXECUTION_MODE_SEQUENTIAL, variable=self.execution_mode, style="Dialog.TRadiobutton").pack(side="left")
         ttk.Radiobutton(mode_frame, text="All at once", value=EXECUTION_MODE_PARALLEL, variable=self.execution_mode, style="Dialog.TRadiobutton").pack(side="left", padx=(SPACE["sm"], 0))
 
-        ttk.Label(self.body, text="Shortcut color", style="Dialog.TLabel", font=("Segoe UI", 10, "bold")).grid(row=4, column=0, sticky="w", pady=(14, 0))
-        self.color_var = tk.StringVar(value=normalize_shortcut_color(self.shortcut.get("color", "")))
-        color_frame = tk.Frame(self.body, bg=COLORS["card"])
-        color_frame.grid(row=5, column=0, sticky="w", pady=(5, 0))
-        self.color_preview = tk.Button(color_frame, command=self._choose_shortcut_color, width=14, font=("Segoe UI", 9, "bold"), padx=8, pady=5, cursor="hand2")
-        self.color_preview.pack(side="left")
-        self.clear_color_button = ttk.Button(color_frame, text="Clear", command=self._clear_shortcut_color, style="Secondary.TButton")
-        self.clear_color_button.pack(side="left", padx=(SPACE["sm"], 0))
-        self._update_color_preview()
-
-        ttk.Label(self.body, text="Actions", style="Dialog.TLabel", font=("Segoe UI", 10, "bold")).grid(row=6, column=0, sticky="w", pady=(16, 0))
-        ttk.Label(self.body, text="Actions run in the order shown.", style="Helper.TLabel").grid(row=7, column=0, sticky="w", pady=(2, 6))
+        ttk.Label(self.body, text="Actions", style="Dialog.TLabel", font=("Segoe UI", 10, "bold")).grid(row=4, column=0, sticky="w", pady=(16, 0))
+        ttk.Label(self.body, text="Actions run in the order shown.", style="Helper.TLabel").grid(row=5, column=0, sticky="w", pady=(2, 6))
         list_frame = ttk.Frame(self.body, style="Dialog.TFrame")
-        list_frame.grid(row=8, column=0, sticky="nsew")
+        list_frame.grid(row=6, column=0, sticky="nsew")
         list_frame.columnconfigure(0, weight=1)
         list_frame.rowconfigure(0, weight=1)
         self.action_list = ttk.Treeview(list_frame, columns=("sequence", "name", "type"), show="headings", height=8, selectmode="browse")
@@ -1121,7 +1178,7 @@ class ShortcutDialog(_LegacyShortcutDialog):
         self.action_list.bind("<Double-Button-1>", lambda _event: self._edit_action())
 
         controls = ttk.Frame(self.body, style="Dialog.TFrame")
-        controls.grid(row=9, column=0, sticky="ew", pady=(8, 0))
+        controls.grid(row=7, column=0, sticky="ew", pady=(8, 0))
         self.add_action_button = ttk.Button(controls, text="Add action", command=self._add_action, style="Secondary.TButton")
         self.add_action_button.pack(side="left")
         self.edit_action_button = ttk.Button(controls, text="Edit", command=self._edit_action, style="Secondary.TButton")
@@ -1136,12 +1193,12 @@ class ShortcutDialog(_LegacyShortcutDialog):
         self.down_action_button.pack(side="left", padx=(SPACE["xs"], 0))
 
         task_frame = ttk.Frame(self.body, style="Dialog.TFrame")
-        task_frame.grid(row=10, column=0, sticky="ew", pady=(10, 0))
+        task_frame.grid(row=8, column=0, sticky="ew", pady=(10, 0))
         ttk.Button(task_frame, text="Import from Task Scheduler XML", command=self._import_task_xml, style="Secondary.TButton").pack(side="left")
         ttk.Button(task_frame, text="Export as Task Scheduler XML", command=self._export_task_xml, style="Secondary.TButton").pack(side="left", padx=(SPACE["sm"], 0))
         ttk.Label(task_frame, text="Exported tasks run actions one by one.", style="Helper.TLabel").pack(side="left", padx=(SPACE["sm"], 0))
         self.actions_error = tk.StringVar()
-        ttk.Label(self.body, textvariable=self.actions_error, style="Error.TLabel").grid(row=11, column=0, sticky="w", pady=(3, 0))
+        ttk.Label(self.body, textvariable=self.actions_error, style="Error.TLabel").grid(row=9, column=0, sticky="w", pady=(3, 0))
 
         self.name.insert(0, str(self.shortcut.get("name", "")))
         self.folder.insert(0, shortcut_folder(self.shortcut))
@@ -1249,7 +1306,7 @@ class ShortcutDialog(_LegacyShortcutDialog):
         self.actions_error.set("")
         try:
             values = normalize_shortcut_input(
-                self.name.get(), folder=self.folder.get(), color=self.color_var.get(),
+                self.name.get(), folder=self.folder.get(),
                 execution_mode=self.execution_mode.get(), actions=self.actions,
                 existing=self.shortcut,
             )
@@ -1293,7 +1350,7 @@ class ShortcutDialog(_LegacyShortcutDialog):
         self.actions_error.set("")
         try:
             self.result = normalize_shortcut_input(
-                self.name.get(), folder=self.folder.get(), color=self.color_var.get(),
+                self.name.get(), folder=self.folder.get(),
                 execution_mode=self.execution_mode.get(), actions=self.actions,
                 existing=self.shortcut,
             )
@@ -1317,11 +1374,16 @@ class ShortcutDialog(_LegacyShortcutDialog):
 
 
 class SettingsDialog(_Dialog):
-    def __init__(self, parent, title, settings):
+    def __init__(
+        self, parent, title, settings, shortcut_provider=None,
+        shortcut_importer=None,
+    ):
         self.settings = settings
+        self.shortcut_provider = shortcut_provider or (lambda: ())
+        self.shortcut_importer = shortcut_importer
         self.swatch_buttons = {}
         self._capture_modifiers = set()
-        super().__init__(parent, title, 620, "Save settings", minimum_height=560)
+        super().__init__(parent, title, 620, "Save settings", minimum_height=650)
 
     def _build(self):
         self.body.columnconfigure(0, weight=1)
@@ -1403,6 +1465,21 @@ class SettingsDialog(_Dialog):
         ttk.Label(
             self.body, text=CONFIG_FILE, style="Helper.TLabel", wraplength=550,
         ).grid(row=18, column=0, sticky="w", pady=(3, 0))
+        storage_actions = ttk.Frame(self.body, style="Dialog.TFrame")
+        storage_actions.grid(row=19, column=0, sticky="w", pady=(10, 0))
+        ttk.Button(
+            storage_actions, text="Download shortcuts…", command=self._export_shortcuts,
+            style="Secondary.TButton",
+        ).pack(side="left")
+        ttk.Button(
+            storage_actions, text="Upload shortcuts…", command=self._import_shortcuts,
+            style="Secondary.TButton",
+        ).pack(side="left", padx=(SPACE["sm"], 0))
+        self.storage_status = tk.StringVar()
+        ttk.Label(
+            self.body, textvariable=self.storage_status, style="Helper.TLabel",
+            wraplength=550,
+        ).grid(row=20, column=0, sticky="w", pady=(5, 0))
 
     def initial_focus(self):
         return self.path
@@ -1424,6 +1501,60 @@ class SettingsDialog(_Dialog):
             self.path.delete(0, tk.END)
             self.path.insert(0, selected)
             self.path_error.set("")
+
+    def _export_shortcuts(self):
+        destination = filedialog.asksaveasfilename(
+            parent=self, title="Download shortcuts", defaultextension=".json",
+            initialfile="FlashCMD-shortcuts.json",
+            filetypes=(("JSON files", "*.json"), ("All files", "*.*")),
+        )
+        if not destination:
+            return
+        payload = {
+            "application": APP_NAME, "version": __version__,
+            "shortcuts": deepcopy(list(self.shortcut_provider())),
+        }
+        try:
+            with open(destination, "w", encoding="utf-8", newline="\n") as export_file:
+                json.dump(payload, export_file, ensure_ascii=False, indent=2)
+                export_file.write("\n")
+        except (OSError, TypeError, ValueError) as error:
+            messagebox.showerror(
+                "Download Shortcuts", f"Shortcuts could not be downloaded:\n\n{error}",
+                parent=self,
+            )
+            return
+        self.storage_status.set(f"Downloaded {len(payload['shortcuts'])} shortcuts.")
+
+    def _import_shortcuts(self):
+        source = filedialog.askopenfilename(
+            parent=self, title="Upload shortcuts",
+            filetypes=(("JSON files", "*.json"), ("All files", "*.*")),
+        )
+        if not source:
+            return
+        try:
+            with open(source, "r", encoding="utf-8") as import_file:
+                shortcuts = normalize_shortcut_collection(json.load(import_file))
+        except (ConfigError, JSONDecodeError, OSError, TypeError, ValueError) as error:
+            messagebox.showerror(
+                "Upload Shortcuts", f"The selected file is not a valid shortcut backup:\n\n{error}",
+                parent=self,
+            )
+            return
+        existing_count = len(list(self.shortcut_provider()))
+        confirmed = messagebox.askyesno(
+            "Replace all shortcuts?",
+            f"This will replace all {existing_count} existing shortcuts with "
+            f"{len(shortcuts)} uploaded shortcuts.\n\nThis cannot be undone. Continue?",
+            parent=self,
+        )
+        if not confirmed:
+            return
+        if self.shortcut_importer is None or not self.shortcut_importer(shortcuts):
+            self.storage_status.set("Shortcuts were not replaced.")
+            return
+        self.storage_status.set(f"Replaced shortcuts with {len(shortcuts)} uploaded shortcuts.")
 
     def _update_swatch_states(self):
         selected = self.primary_var.get()
@@ -1520,6 +1651,7 @@ class ShortcutManager:
         self._active_runs = {}
         self._exiting = False
         self.search_var = tk.StringVar()
+        self.compact_cards_var = tk.BooleanVar(value=False)
         self.count_var = tk.StringVar()
         self.status_var = tk.StringVar()
         ensure_icon()
@@ -1806,6 +1938,12 @@ class ShortcutManager:
         self.search_entry.pack(side="left")
         self.clear_search_button = ttk.Button(search_area, text="×", width=2, command=self.clear_search, style="Ghost.TButton")
         self.clear_search_button.pack(side="left", padx=(2, 0))
+        self.compact_cards_toggle = ttk.Checkbutton(
+            search_area, text="▦", width=2, variable=self.compact_cards_var,
+            command=self._toggle_compact_cards, style="CompactToggle.Toolbutton",
+            cursor="hand2", takefocus=True,
+        )
+        self.compact_cards_toggle.pack(side="left", padx=(SPACE["sm"], 0))
         self.clone_button = ttk.Button(toolbar, text="Clone", command=self.clone, style="Secondary.TButton")
         self.clone_button.grid(row=0, column=2, sticky="e", padx=(0, SPACE["sm"]))
         self.add_button = ttk.Button(toolbar, text="+ Add shortcut", command=self.add, style="Primary.TButton")
@@ -1914,7 +2052,7 @@ class ShortcutManager:
             section, text=f"{'▸' if collapsed else '▾'}  {folder}  ({len(pairs)})",
             command=lambda: self._toggle_folder(folder), anchor="w", cursor="hand2",
             bg=COLORS["background"], fg=COLORS["text"], activebackground=COLORS["hover"],
-            activeforeground=COLORS["text"], font=FONTS["card_title"], relief="flat",
+            activeforeground=COLORS["text"], font=FONTS["folder"], relief="flat",
             bd=0, padx=SPACE["xs"], pady=SPACE["xs"], highlightthickness=0,
         )
         header.pack(fill="x", padx=(SPACE["xs"], SPACE["sm"]))
@@ -1926,9 +2064,9 @@ class ShortcutManager:
         for source_index, shortcut in pairs:
             card = ShortcutCard(
                 card_area, source_index, shortcut, self.select_shortcut, self.edit,
-                self._show_shortcut_context,
+                self._show_shortcut_context, compact=self.compact_cards_var.get(),
             )
-            card.pack(fill="x", padx=(SPACE["xs"], SPACE["sm"]), pady=(0, SPACE["xs"]))
+            card.pack(fill="x", padx=(SPACE["md"], SPACE["sm"]), pady=(0, SPACE["xs"]))
             for child in (card, *card.winfo_children()):
                 child.bind("<Enter>", self.card_list._enable_wheel, add="+")
             self.cards[source_index] = card
@@ -1940,6 +2078,9 @@ class ShortcutManager:
             self.collapsed_folders.remove(key)
         else:
             self.collapsed_folders.add(key)
+        self.refresh_cards(preserve_selection=True)
+
+    def _toggle_compact_cards(self):
         self.refresh_cards(preserve_selection=True)
 
     def _build_empty_state(self):
@@ -2159,7 +2300,11 @@ class ShortcutManager:
         self._set_status(f"Deleted {name}" if saved else "Deleted locally, but changes were not saved", transient=True)
 
     def open_settings(self):
-        dialog = SettingsDialog(self.root, "Settings", self.settings)
+        dialog = SettingsDialog(
+            self.root, "Settings", self.settings,
+            shortcut_provider=lambda: self.shortcuts,
+            shortcut_importer=self._replace_shortcuts_from_import,
+        )
         if not dialog.result:
             return
         self.settings.update(dialog.result)
@@ -2171,6 +2316,19 @@ class ShortcutManager:
         if hotkey_error:
             message = "Settings saved, but the restore hotkey is unavailable" if saved else "Settings changed locally, but the restore hotkey is unavailable"
         self._set_status(message, transient=True)
+
+    def _replace_shortcuts_from_import(self, shortcuts):
+        previous_shortcuts = self.shortcuts
+        previous_selection = self.selected_index
+        self.shortcuts = deepcopy(shortcuts)
+        self.selected_index = None
+        if not self.save():
+            self.shortcuts = previous_shortcuts
+            self.selected_index = previous_selection
+            return False
+        self.refresh_cards(preserve_selection=False)
+        self._set_status(f"Imported {len(self.shortcuts)} shortcuts", transient=True)
+        return True
 
     def terminal_settings(self):
         """Backward-compatible entry point for opening the combined settings."""
@@ -2194,7 +2352,7 @@ class ShortcutManager:
 
     def _run_shortcut_worker(
         self, run_id, shortcut_name, terminal_path, actions, execution_mode,
-        color, cancel_event,
+        cancel_event,
     ):
         def progress(event):
             self._ui_events.put(("progress", shortcut_name, event))
@@ -2202,7 +2360,7 @@ class ShortcutManager:
         try:
             result = launch_shortcut(
                 terminal_path, actions, execution_mode, platform=PLATFORM,
-                color=color, run_id=run_id, cancel_event=cancel_event,
+                run_id=run_id, cancel_event=cancel_event,
                 on_progress=progress,
             )
         except Exception as error:
@@ -2279,7 +2437,7 @@ class ShortcutManager:
                 run_id, shortcut_name,
                 self.settings.get("terminal_path", DEFAULT_SETTINGS["terminal_path"]),
                 deepcopy(actions), shortcut_execution_mode(item),
-                normalize_shortcut_color(item.get("color", "")), cancel_event,
+                cancel_event,
             ),
             daemon=True,
         )

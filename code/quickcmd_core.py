@@ -165,7 +165,7 @@ def normalize_folder(folder):
 
 
 def normalize_shortcut_color(color):
-    """Return an uppercase #RRGGBB shortcut color, or blank if invalid."""
+    """Return an uppercase #RRGGBB action color, or blank if invalid."""
     clean = color.strip().upper() if isinstance(color, str) else ""
     if len(clean) != 7 or not clean.startswith("#"):
         return ""
@@ -205,6 +205,16 @@ def normalize_config(raw, platform=None):
             shortcut["color"] = color
         else:
             shortcut.pop("color", None)
+        actions = shortcut.get("actions")
+        if isinstance(actions, list):
+            for action in actions:
+                if not isinstance(action, dict):
+                    continue
+                action_color = normalize_shortcut_color(action.get("color", ""))
+                if action_color:
+                    action["color"] = action_color
+                else:
+                    action.pop("color", None)
 
     normalized_settings = default_settings(platform)
     normalized_settings.update(deepcopy(settings))
@@ -227,8 +237,9 @@ def load_config(path, platform=None):
 
 
 def save_config(path, shortcuts, settings):
-    """Atomically save a validated configuration beside its destination."""
+    """Atomically save without canonicalizing unrelated shortcut records."""
     data = normalize_config({"shortcuts": shortcuts, "settings": settings})
+    data["shortcuts"] = deepcopy(shortcuts)
     target = os.path.abspath(os.fspath(path))
     directory = os.path.dirname(target)
     os.makedirs(directory, exist_ok=True)
@@ -255,7 +266,7 @@ def save_config(path, shortcuts, settings):
 
 def normalize_action_input(
     action=None, name="", action_mode=ACTION_MODE_COMMAND_LINE, command="",
-    program_path="", arguments="", start_in="",
+    program_path="", arguments="", start_in="", color="",
 ):
     """Return one validated, detached action using only current action fields."""
     source = action if isinstance(action, dict) else {}
@@ -271,24 +282,31 @@ def normalize_action_input(
     clean_program = clean_program.strip() if isinstance(clean_program, str) else ""
     clean_arguments = source.get("arguments", arguments)
     clean_arguments = _normalize_newlines(clean_arguments).strip() if isinstance(clean_arguments, str) else ""
+    clean_color = normalize_shortcut_color(source.get("color", color))
     if not clean_name:
         raise ValidationError("Enter an action name.", "name")
     if mode == ACTION_MODE_PROGRAM:
         if not clean_program:
             raise ValidationError("Enter a program or script to run.", "program_path")
-        return {
+        values = {
             "name": clean_name, "action_mode": ACTION_MODE_PROGRAM,
             "program_path": clean_program, "arguments": clean_arguments,
             "start_in": clean_start,
         }
+        if clean_color:
+            values["color"] = clean_color
+        return values
     if mode != ACTION_MODE_COMMAND_LINE:
         raise ValidationError("Choose a supported action type.", "action_mode")
     if not clean_command:
         raise ValidationError("Enter a command to run.", "command")
-    return {
+    values = {
         "name": clean_name, "action_mode": ACTION_MODE_COMMAND_LINE,
         "command": clean_command, "start_in": clean_start,
     }
+    if clean_color:
+        values["color"] = clean_color
+    return values
 
 
 def shortcut_execution_mode(shortcut):
@@ -315,22 +333,58 @@ def shortcut_actions(shortcut):
             })
         else:
             legacy["command"] = shortcut.get("command", "")
+        legacy["color"] = shortcut.get("color", "")
         return [normalize_action_input(legacy)]
     actions = shortcut.get("actions")
     if not isinstance(actions, list) or not actions:
         raise ValidationError("Add at least one action.", "actions")
     normalized = []
+    legacy_color = normalize_shortcut_color(shortcut.get("color", ""))
     for index, action in enumerate(actions):
         if not isinstance(action, dict):
             raise ValidationError(
                 f"Action {index + 1} must be an object.", f"actions[{index}]",
             )
         try:
-            normalized.append(normalize_action_input(action))
+            normalized_action = normalize_action_input(action)
+            if legacy_color and "color" not in normalized_action:
+                normalized_action["color"] = legacy_color
+            normalized.append(normalized_action)
         except ValidationError as error:
             raise ValidationError(
                 f"Action {index + 1}: {error}", f"actions[{index}].{error.field or 'action'}",
             ) from error
+    return normalized
+
+
+def first_action_color(shortcut):
+    """Return the first valid projected action color in execution order."""
+    for action in shortcut_actions(shortcut):
+        color = normalize_shortcut_color(action.get("color", ""))
+        if color:
+            return color
+    return ""
+
+
+def normalize_shortcut_collection(raw):
+    """Validate and detach an imported shortcut collection without saving it."""
+    if isinstance(raw, dict):
+        if "shortcuts" not in raw:
+            raise ConfigError("The import file must contain a 'shortcuts' list.")
+        shortcuts = raw.get("shortcuts")
+    elif isinstance(raw, list):
+        shortcuts = raw
+    else:
+        raise ConfigError("The import file must be an object or a shortcut list.")
+    normalized = normalize_config({"shortcuts": shortcuts, "settings": {}})["shortcuts"]
+    for index, shortcut in enumerate(normalized):
+        name = shortcut.get("name", "")
+        if not isinstance(name, str) or not name.strip():
+            raise ConfigError(f"Shortcut {index + 1} must have a name.")
+        try:
+            shortcut_actions(shortcut)
+        except ValidationError as error:
+            raise ConfigError(f"Shortcut {index + 1} ({name.strip()}): {error}") from error
     return normalized
 
 
@@ -355,9 +409,15 @@ def normalize_shortcut_input(
         if not isinstance(actions, list) or not actions:
             raise ValidationError("Add at least one action.", "actions")
         normalized_actions = []
+        legacy_color = normalize_shortcut_color(color)
+        if not legacy_color and isinstance(existing, dict):
+            legacy_color = normalize_shortcut_color(existing.get("color", ""))
         for index, action in enumerate(actions):
             try:
-                normalized_actions.append(normalize_action_input(action))
+                normalized_action = normalize_action_input(action)
+                if legacy_color and "color" not in normalized_action:
+                    normalized_action["color"] = legacy_color
+                normalized_actions.append(normalized_action)
             except ValidationError as error:
                 raise ValidationError(
                     f"Action {index + 1}: {error}",
@@ -373,8 +433,6 @@ def normalize_shortcut_input(
             "name": clean_name, "folder": clean_folder,
             "execution_mode": execution_mode, "actions": normalized_actions,
         })
-        if clean_color:
-            values["color"] = clean_color
         return values
     if action_mode == ACTION_MODE_PROGRAM:
         if not clean_program:

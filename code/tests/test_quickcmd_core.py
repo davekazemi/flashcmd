@@ -23,11 +23,13 @@ from quickcmd_core import (
     default_settings,
     executable_base_dir,
     filter_shortcuts,
+    first_action_color,
     legacy_config_candidates,
     load_config,
     normalize_config,
     normalize_action_input,
     normalize_restore_hotkey_setting,
+    normalize_shortcut_collection,
     normalize_shortcut_color,
     normalize_shortcut_input,
     normalize_folder,
@@ -140,14 +142,19 @@ class ConfigTests(unittest.TestCase):
         self.assertEqual(normalize_restore_hotkey_setting(" Ctrl+Alt+F "), "Ctrl+Alt+F")
         self.assertEqual(normalize_restore_hotkey_setting(None), "")
 
-    def test_shortcut_color_is_normalized_and_invalid_values_are_removed(self):
+    def test_shortcut_and_action_colors_are_normalized_and_invalid_values_are_removed(self):
         self.assertEqual(normalize_shortcut_color(" #a1b2c3 "), "#A1B2C3")
         self.assertEqual(normalize_shortcut_color("blue"), "")
         result = normalize_config({"shortcuts": [
-            {"name": "Good", "color": "#abcdef"},
+            {"name": "Good", "color": "#abcdef", "actions": [
+                {"name": "One", "command": "echo 1", "color": " #123abc "},
+                {"name": "Two", "command": "echo 2", "color": "bad"},
+            ]},
             {"name": "Bad", "color": "not-a-color"},
         ]})
         self.assertEqual(result["shortcuts"][0]["color"], "#ABCDEF")
+        self.assertEqual(result["shortcuts"][0]["actions"][0]["color"], "#123ABC")
+        self.assertNotIn("color", result["shortcuts"][0]["actions"][1])
         self.assertNotIn("color", result["shortcuts"][1])
 
     def test_terminal_args_is_removed_without_mutating_input(self):
@@ -295,15 +302,37 @@ class ShortcutHelperTests(unittest.TestCase):
         self.assertEqual(command_preview("x" * 101), "x" * 99 + "…")
 
     def test_legacy_projection_is_detached_and_does_not_migrate_source(self):
-        legacy = {"name": "Build", "command": " echo ok ", "start_in": " C:/Work "}
+        legacy = {
+            "name": "Build", "command": " echo ok ", "start_in": " C:/Work ",
+            "color": " #2563eb ",
+        }
         actions = shortcut_actions(legacy)
         self.assertEqual(actions, [{
             "name": "Build", "action_mode": ACTION_MODE_COMMAND_LINE,
-            "command": "echo ok", "start_in": "C:/Work",
+            "command": "echo ok", "start_in": "C:/Work", "color": "#2563EB",
         }])
         actions[0]["name"] = "Changed"
         self.assertNotIn("actions", legacy)
         self.assertEqual(legacy["name"], "Build")
+
+    def test_top_level_color_projects_only_to_actions_without_valid_colors(self):
+        shortcut = {
+            "name": "Demo", "color": "#2563eb", "actions": [
+                {"name": "First", "command": "echo 1"},
+                {"name": "Second", "command": "echo 2", "color": "#dc2626"},
+            ],
+        }
+        actions = shortcut_actions(shortcut)
+        self.assertEqual([action["color"] for action in actions], ["#2563EB", "#DC2626"])
+        self.assertNotIn("color", shortcut["actions"][0])
+        self.assertEqual(first_action_color(shortcut), "#2563EB")
+
+    def test_first_action_color_skips_uncolored_actions_without_legacy_fallback(self):
+        shortcut = {"name": "Demo", "actions": [
+            {"name": "One", "command": "echo 1"},
+            {"name": "Two", "command": "echo 2", "color": "#dc2626"},
+        ]}
+        self.assertEqual(first_action_color(shortcut), "#DC2626")
 
     def test_current_shortcut_round_trip_preserves_order_and_unknown_metadata(self):
         original = {
@@ -323,6 +352,8 @@ class ShortcutHelperTests(unittest.TestCase):
         self.assertEqual(result["execution_mode"], EXECUTION_MODE_PARALLEL)
         self.assertEqual([action["name"] for action in result["actions"]], ["API", "Browser"])
         self.assertEqual(result["actions"][0]["command"], "python app.py")
+        self.assertTrue(all(action["color"] == "#2563EB" for action in result["actions"]))
+        self.assertNotIn("color", result)
         self.assertEqual(result["custom"], {"kept": True})
         for field in ("command", "action_mode", "program_path", "arguments", "start_in"):
             self.assertNotIn(field, result)
@@ -368,16 +399,48 @@ class ShortcutHelperTests(unittest.TestCase):
                 self.assertEqual([index for index, _ in filter_shortcuts(shortcuts, query)], [0])
 
     def test_saving_does_not_canonicalize_unrelated_legacy_shortcut(self):
-        legacy = {"name": "Legacy", "command": "echo old", "custom": "untouched"}
+        legacy = {
+            "name": "Legacy", "command": "echo old", "color": "#abcdef",
+            "custom": "untouched",
+        }
         current = normalize_shortcut_input(
             "Current", actions=[{"name": "Run", "command": "echo new"}],
         )
         with tempfile.TemporaryDirectory() as directory:
             path = os.path.join(directory, "shortcuts.json")
             save_config(path, [legacy, current], {})
-            loaded = load_config(path)["shortcuts"]
-        self.assertEqual(loaded[0], legacy)
-        self.assertNotIn("actions", loaded[0])
+            with open(path, "r", encoding="utf-8") as saved:
+                persisted = json.load(saved)["shortcuts"]
+        self.assertEqual(persisted[0], legacy)
+        self.assertNotIn("actions", persisted[0])
+
+    def test_current_save_removes_top_level_color_and_keeps_projected_appearance(self):
+        legacy = {"name": "Legacy", "command": "echo old", "color": "#abcdef"}
+        current = normalize_shortcut_input(
+            "Legacy", actions=shortcut_actions(legacy), existing=legacy,
+        )
+        self.assertNotIn("color", current)
+        self.assertEqual(current["actions"][0]["color"], "#ABCDEF")
+
+    def test_imported_shortcut_collection_accepts_export_object_and_legacy_list(self):
+        current = {"shortcuts": [{"name": "Build", "actions": [
+            {"name": "Run", "command": "echo ok", "color": "#2563eb"},
+        ]}]}
+        imported = normalize_shortcut_collection(current)
+        self.assertEqual(imported[0]["actions"][0]["color"], "#2563EB")
+        self.assertEqual(
+            normalize_shortcut_collection([{"name": "Legacy", "command": "echo old"}])[0]["name"],
+            "Legacy",
+        )
+
+    def test_imported_shortcut_collection_rejects_invalid_roots_and_actions(self):
+        invalid = (
+            {}, {"shortcuts": {}}, {"shortcuts": [{"command": "echo unnamed"}]},
+            {"shortcuts": [{"name": "Broken", "actions": []}]},
+        )
+        for value in invalid:
+            with self.subTest(value=value), self.assertRaises(ConfigError):
+                normalize_shortcut_collection(value)
 
 
 class TerminalHelperTests(unittest.TestCase):

@@ -185,21 +185,22 @@ class MultiActionLauncherTests(unittest.TestCase):
 
     def test_compound_windows_terminal_argv_groups_named_colored_tabs(self):
         wrappers = [
-            SimpleNamespace(action={"name": "API", "start_in": r"C:\API"}, wrapper_path=r"C:\run\a.bat"),
-            SimpleNamespace(action={"name": "Web", "start_in": ""}, wrapper_path=r"C:\run\b.bat"),
+            SimpleNamespace(action={"name": "API", "start_in": r"C:\API", "color": "#2563eb"}, wrapper_path=r"C:\run\a.bat"),
+            SimpleNamespace(action={"name": "Web", "start_in": "", "color": "#dc2626"}, wrapper_path=r"C:\run\b.bat"),
         ]
         argv = launcher.build_compound_windows_terminal_argv(
-            "wt.exe", "flashcmd-abc", wrappers, "#2563EB",
+            "wt.exe", "flashcmd-abc", wrappers,
         )
         self.assertEqual(argv[:3], ["wt.exe", "--window", "flashcmd-abc"])
         self.assertEqual(argv.count("new-tab"), 2)
         self.assertEqual(argv.count(";"), 1)
         self.assertEqual(argv.count("--suppressApplicationTitle"), 2)
-        self.assertEqual(argv.count("#2563EB"), 2)
+        self.assertEqual(argv.count("#2563EB"), 1)
+        self.assertEqual(argv.count("#DC2626"), 1)
 
     def test_sequential_reuses_unique_window_and_continues_after_failure(self):
         actions = [
-            {"name": "One", "command": "exit /b 2", "start_in": ""},
+            {"name": "One", "command": "exit /b 2", "start_in": "", "color": "#2563EB"},
             {"name": "Two", "command": "echo ok", "start_in": ""},
         ]
         monitor_results = [
@@ -221,12 +222,14 @@ class MultiActionLauncherTests(unittest.TestCase):
         self.assertEqual(second[second.index("--window") + 1], "flashcmd-run1")
         self.assertEqual(first[first.index("--title") + 1], "One")
         self.assertEqual(second[second.index("--title") + 1], "Two")
+        self.assertEqual(first[first.index("--tabColor") + 1], "#2563EB")
+        self.assertNotIn("--tabColor", second)
 
     def test_parallel_uses_one_wt_invocation_and_keeps_program_direct(self):
         actions = [
-            {"name": "API", "command": "echo api", "start_in": ""},
-            {"name": "Tool", "action_mode": "program", "program_path": "tool.exe", "arguments": "", "start_in": ""},
-            {"name": "Web", "command": "echo web", "start_in": ""},
+            {"name": "API", "command": "echo api", "start_in": "", "color": "#2563EB"},
+            {"name": "Tool", "action_mode": "program", "program_path": "tool.exe", "arguments": "", "start_in": "", "color": "#16A34A"},
+            {"name": "Web", "command": "echo web", "start_in": "", "color": "invalid"},
         ]
         host = mock.Mock()
         program = mock.Mock(returncode=0)
@@ -243,6 +246,9 @@ class MultiActionLauncherTests(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(popen.call_count, 1)
         self.assertEqual(popen.call_args.args[0].count("new-tab"), 2)
+        self.assertEqual(popen.call_args.args[0].count("--tabColor"), 1)
+        self.assertIn("#2563EB", popen.call_args.args[0])
+        self.assertNotIn("#16A34A", popen.call_args.args[0])
         launch_program.assert_called_once_with("tool.exe", "", "", platform="windows")
 
     def test_parallel_programs_are_all_launched_before_waiting(self):

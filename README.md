@@ -7,7 +7,7 @@ organize, and launch ordered groups of commands or programs without retyping
 them every time.
 </p>
 
-<p style="text-align: center"><strong>Current release: 0.1.0</strong></p>
+<p style="text-align: center"><strong>Current release: 0.2.0</strong></p>
 
 
 
@@ -22,6 +22,7 @@ them every time.
 - Clone complete shortcuts or individual actions to create variations quickly
 - Organize shortcuts into collapsible folders
 - Search, edit, delete, and run saved shortcuts quickly
+- Switch to a compact name-and-color card view beside Search when more rows are needed
 - Import and export complete ordered shortcuts as Task Scheduler XML
 - Restore the app from the tray or background using a configurable hotkey
 - Keep a single running instance so repeated launches restore the same window
@@ -33,27 +34,34 @@ them every time.
 Download the latest FlashCMD release for Windows or macOS from
 [GitHub Releases](https://github.com/davekazemi/flashcmd/releases).
 
-## Version 0.1.0 highlights
+## Version 0.2.0 highlights
 
-- Ordered shortcuts containing multiple named Command Line and Program/Script
-  actions
-- Action editing, deletion, reordering, and independent cloning
-- Complete shortcut cloning with a prompted name and independent copied data
-- **One by one** and **All at once** execution with per-action completion and
-  aggregated failure reporting
-- One uniquely identified Windows Terminal window per run, with named and
-  colored command tabs when `wt.exe` is available
-- Direct Program/Script launching and usable native-console fallback behavior
-- Overlapping runs with independent window identifiers and result files
-- Complete ordered Task Scheduler XML import and export
-- Lazy compatibility for older single-action shortcut records
+- Optional color is now configured per action rather than per shortcut
+- Windows Terminal command tabs use each action's own color in both **One by
+  one** and **All at once** runs
+- Shortcut cards use the first colored action in execution order as their accent
+- Legacy 0.1.0 shortcut colors are projected onto uncolored actions without
+  rewriting files merely because they were loaded
+- The Windows MSI offers an unchecked, installer-only **Add FlashCMD to startup**
+  option and preserves that choice across upgrades and repairs
+- Build, installer, and required branding inputs now live under `code/` so a
+  clean checkout contains the supported Windows and macOS build paths
+
+## Installation
+
+The Windows `.msi` is the recommended package. Setup includes an unchecked
+**Add FlashCMD to startup** option. This is an installer choice; FlashCMD does
+not add a startup toggle to app Settings. The existing final-page option to open
+FlashCMD immediately remains available.
+
+The versioned Windows `.exe` is portable and does not add a startup entry. On
+macOS, open the `.dmg` and drag FlashCMD into Applications.
 
 ## Creating and running a shortcut
 
-1. Select **Add shortcut** and enter its name, folder, optional color, and
-   execution mode.
+1. Select **Add shortcut** and enter its name, folder, and execution mode.
 2. Add one or more actions. Each action requires a name and can be either
-   **Command Line** or **Program/Script**.
+   **Command Line** or **Program/Script**, with an optional color.
 3. Use **Move up** and **Move down** to set the execution order.
 4. Save the shortcut, select its card, and choose **Run**.
 
@@ -68,8 +76,8 @@ exit or launch details; successful actions are not discarded.
 
 ## How it works
 
-Each shortcut includes a name, folder, optional color, execution mode, and an
-ordered list of actions. Every action has its own name and can be either:
+Each shortcut includes a name, folder, execution mode, and an ordered list of
+actions. Every action has its own name and optional color, and can be either:
 
 - **Command Line** — a command and optional **Start in** working directory
 - **Program/Script** — a program or script path, optional arguments, and optional
@@ -97,7 +105,7 @@ an **All at once** FlashCMD shortcut is exported using sequential task semantics
 On Windows, when Windows Terminal (`wt.exe`) is available, every Command Line
 action in a run gets its own tab in one newly created, uniquely identified
 window. Tabs use the action name, suppress application-title replacement, and
-use the shortcut color when one is selected. Parallel command tabs are submitted
+use that command action's color when one is selected. Parallel command tabs are submitted
 together so they join the same new window. Program/Script actions always launch
 as direct external processes rather than Terminal tabs.
 
@@ -132,8 +140,27 @@ successfully saving that shortcut migrates only that record to the current
 multi-action format; cancelling an edit or saving another shortcut leaves the
 legacy record unchanged.
 
+A legacy 0.1.0 top-level shortcut color is projected in memory onto each action
+that lacks its own valid color. The card and Windows Terminal tabs therefore keep
+their prior appearance. Successfully saving that shortcut through the current
+editor stores the projected colors on actions and removes the top-level color.
+
+## Building from source
+
+Install build requirements with `python -m pip install -r code/requirements-build.txt`.
+On Windows, run `code/scripts/build_windows.ps1` with PyInstaller and WiX v4
+available. On macOS, run `bash code/scripts/build_macos.sh`; icon generation and
+packaging require the standard macOS `sips`, `iconutil`, signing, and notarization
+tools as applicable. Generated files remain under ignored `build/`, `dist/`, and
+`release/` artifact paths.
+
 Your personal `shortcuts.json` and backup files are private local data. They are
 ignored by Git and should never be uploaded or shared publicly.
+
+Settings includes **Download shortcuts** to create a JSON backup and **Upload
+shortcuts** to restore one. Uploaded files are validated before FlashCMD warns
+that the current shortcut collection will be replaced. Nothing is replaced
+unless that confirmation is accepted.
 
 ## Notes
 

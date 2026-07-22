@@ -18,6 +18,7 @@ from quickcmd_core import (
     build_batch_script,
     build_terminal_argv,
     current_platform,
+    normalize_shortcut_color,
     shortcut_action_mode,
 )
 
@@ -148,7 +149,7 @@ def build_windows_terminal_argv(
     return argv
 
 
-def _windows_tab_argv(wrapper, color):
+def _windows_tab_argv(wrapper):
     argv = ["new-tab"]
     start_in = wrapper.action.get("start_in", "")
     if start_in:
@@ -156,19 +157,20 @@ def _windows_tab_argv(wrapper, color):
     name = wrapper.action.get("name", "")
     if name:
         argv.extend(("--title", str(name), "--suppressApplicationTitle"))
+    color = normalize_shortcut_color(wrapper.action.get("color", ""))
     if color:
-        argv.extend(("--tabColor", str(color)))
+        argv.extend(("--tabColor", color))
     argv.extend(("cmd.exe", "/d", "/c", wrapper.wrapper_path))
     return argv
 
 
-def build_compound_windows_terminal_argv(windows_terminal_path, window_id, wrappers, color=""):
+def build_compound_windows_terminal_argv(windows_terminal_path, window_id, wrappers):
     """Build one WT invocation containing one opaque tab command per wrapper."""
     argv = [os.fspath(windows_terminal_path), "--window", str(window_id)]
     for position, wrapper in enumerate(wrappers):
         if position:
             argv.append(";")
-        argv.extend(_windows_tab_argv(wrapper, color))
+        argv.extend(_windows_tab_argv(wrapper))
     return argv
 
 
@@ -504,7 +506,7 @@ def _launch_macos_command(item, shell_path):
     item.accepted = True
 
 
-def _parallel_commands(commands, system, shell_path, windows_terminal, window_id, color):
+def _parallel_commands(commands, system, shell_path, windows_terminal, window_id):
     """Launch prepared commands and return fallback metadata plus launch errors."""
     errors = {}
     fallback_used = False
@@ -515,7 +517,7 @@ def _parallel_commands(commands, system, shell_path, windows_terminal, window_id
         if system == "windows" and windows_terminal:
             process = subprocess.Popen(
                 build_compound_windows_terminal_argv(
-                    windows_terminal, window_id, commands, color,
+                    windows_terminal, window_id, commands,
                 ),
                 shell=False,
                 creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
@@ -549,12 +551,12 @@ def _parallel_commands(commands, system, shell_path, windows_terminal, window_id
 
 def _run_parallel(
     action_list, prepared, results, system, shell_path, windows_terminal,
-    window_id, color, cancel_event, start_timeout, completion_timeout,
+    window_id, cancel_event, start_timeout, completion_timeout,
     on_progress, identifier,
 ):
     errors, fallback_used, fallback_detail = _parallel_commands(
         list(prepared.values()), system, shell_path, windows_terminal,
-        window_id, color,
+        window_id,
     )
     results.update(errors)
     programs = {}
@@ -604,7 +606,7 @@ def _run_parallel(
 
 def _run_sequential(
     action_list, prepared, results, system, shell_path, windows_terminal,
-    window_id, color, cancel_event, start_timeout, completion_timeout,
+    window_id, cancel_event, start_timeout, completion_timeout,
     on_progress, identifier,
 ):
     fallback_used = system == "windows" and not windows_terminal
@@ -636,7 +638,8 @@ def _run_sequential(
                     item.process = subprocess.Popen(
                         build_windows_terminal_argv(
                             windows_terminal, "cmd.exe", item.wrapper_path,
-                            action.get("name", ""), color,
+                            action.get("name", ""),
+                            normalize_shortcut_color(action.get("color", "")),
                             action.get("start_in", ""), window_id,
                         ),
                         shell=False,
@@ -736,7 +739,7 @@ def launch_shortcut(
         _notify(on_progress, identifier, "launching", 0, total)
         run_arguments = (
             action_list, prepared, results, system, shell_path,
-            windows_terminal, window_id, color, cancel_event, start_timeout,
+            windows_terminal, window_id, cancel_event, start_timeout,
             completion_timeout, on_progress, identifier,
         )
         if execution_mode == EXECUTION_MODE_PARALLEL:

@@ -8,5 +8,14 @@
 /release/*.wixpdb
 !README.md
 !requirements.txt
+/build/
+/dist/
+/code/build/
+/code/dist/
+*.app
+*.dmg
+*.exe
+*.msi
+*.wixpdb
 __pycache__/
 *.py[cod]

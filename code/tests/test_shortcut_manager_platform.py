@@ -1,5 +1,6 @@
 import contextlib
 import io
+import json
 import subprocess
 import sys
 import tempfile
@@ -17,7 +18,7 @@ from quickcmd_core import (
 
 
 class PlatformSafetyTests(unittest.TestCase):
-    def test_shortcut_color_picker_stores_selected_custom_color(self):
+    def test_action_color_picker_stores_selected_custom_color(self):
         dialog = SimpleNamespace(
             color_var=mock.Mock(), _update_color_preview=mock.Mock(),
         )
@@ -26,26 +27,26 @@ class PlatformSafetyTests(unittest.TestCase):
             "shortcut_manager.colorchooser.askcolor",
             return_value=((161, 178, 195), "#a1b2c3"),
         ) as askcolor:
-            shortcut_manager.ShortcutDialog._choose_shortcut_color(dialog)
+            shortcut_manager.ActionDialog._choose_action_color(dialog)
         askcolor.assert_called_once_with(
-            color="#2563EB", parent=dialog, title="Choose shortcut color",
+            color="#2563EB", parent=dialog, title="Choose action color",
         )
         dialog.color_var.set.assert_called_once_with("#A1B2C3")
         dialog._update_color_preview.assert_called_once_with()
 
-    def test_shortcut_color_picker_cancel_preserves_current_color(self):
+    def test_action_color_picker_cancel_preserves_current_color(self):
         dialog = SimpleNamespace(
             color_var=mock.Mock(), _update_color_preview=mock.Mock(),
         )
         dialog.color_var.get.return_value = ""
         with mock.patch("shortcut_manager.colorchooser.askcolor", return_value=(None, None)):
-            shortcut_manager.ShortcutDialog._choose_shortcut_color(dialog)
+            shortcut_manager.ActionDialog._choose_action_color(dialog)
         dialog.color_var.set.assert_not_called()
         dialog._update_color_preview.assert_not_called()
 
-    def test_clearing_shortcut_color_updates_preview(self):
+    def test_clearing_action_color_updates_preview(self):
         dialog = SimpleNamespace(color_var=mock.Mock(), _update_color_preview=mock.Mock())
-        shortcut_manager.ShortcutDialog._clear_shortcut_color(dialog)
+        shortcut_manager.ActionDialog._clear_action_color(dialog)
         dialog.color_var.set.assert_called_once_with("")
         dialog._update_color_preview.assert_called_once_with()
 
@@ -72,6 +73,28 @@ class PlatformSafetyTests(unittest.TestCase):
         self.assertEqual(manager.collapsed_folders, set())
         self.assertEqual(manager.refresh_cards.call_count, 2)
 
+    def test_shortcuts_are_smaller_and_indented_below_folder_heading(self):
+        manager = shortcut_manager.ShortcutManager.__new__(shortcut_manager.ShortcutManager)
+        manager.card_list = SimpleNamespace(interior=mock.Mock(), _enable_wheel=mock.Mock())
+        manager.collapsed_folders = set()
+        manager.cards = {}
+        manager.visible_pairs = []
+        manager.compact_cards_var = SimpleNamespace(get=lambda: False)
+        widget = mock.Mock()
+        card = mock.Mock()
+        card.winfo_children.return_value = []
+        shortcut = {"name": "Demo", "command": "echo ok"}
+        with mock.patch("shortcut_manager.tk.Frame", return_value=widget), \
+                mock.patch("shortcut_manager.tk.Button", return_value=widget) as folder_header, \
+                mock.patch("shortcut_manager.ShortcutCard", return_value=card):
+            manager._build_folder_group("Work", [(0, shortcut)])
+        self.assertLess(shortcut_manager.FONTS["card_title"][1], shortcut_manager.FONTS["folder"][1])
+        self.assertEqual(folder_header.call_args.kwargs["font"], shortcut_manager.FONTS["folder"])
+        self.assertEqual(
+            card.pack.call_args.kwargs["padx"],
+            (shortcut_manager.SPACE["md"], shortcut_manager.SPACE["sm"]),
+        )
+
     def test_simulated_macos_import_skips_windows_only_modules(self):
         code = (
             "import sys; sys.platform='darwin'; import shortcut_manager; "
@@ -95,7 +118,7 @@ class PlatformSafetyTests(unittest.TestCase):
         with mock.patch("shortcut_manager.tk.Tk") as tk_root, contextlib.redirect_stdout(output):
             result = shortcut_manager.main(["--version"])
         self.assertEqual(result, 0)
-        self.assertEqual(output.getvalue().strip(), "FlashCMD 0.1.0")
+        self.assertEqual(output.getvalue().strip(), "FlashCMD 0.2.0")
         tk_root.assert_not_called()
 
     def test_parse_restore_hotkey_canonicalizes_aliases(self):
@@ -183,7 +206,7 @@ class PlatformSafetyTests(unittest.TestCase):
         manager._selected_shortcut = mock.Mock(return_value={
             "name": "Tool", "action_mode": ACTION_MODE_PROGRAM,
             "program_path": r"C:\Program Files\Tool\tool.exe",
-            "arguments": "--run", "start_in": "",
+            "arguments": "--run", "start_in": "", "color": "#2563EB",
         })
         manager._set_status = mock.Mock()
         with mock.patch("shortcut_manager.uuid.uuid4", return_value=SimpleNamespace(hex="run1")), \
@@ -194,6 +217,8 @@ class PlatformSafetyTests(unittest.TestCase):
         args = thread.call_args.kwargs["args"]
         self.assertEqual(args[0:3], ("run1", "Tool", "cmd.exe"))
         self.assertEqual(args[3][0]["program_path"], r"C:\Program Files\Tool\tool.exe")
+        self.assertEqual(args[3][0]["color"], "#2563EB")
+        self.assertEqual(len(args), 6)
         thread.return_value.start.assert_called_once_with()
         self.assertIn("run1", manager._active_runs)
 
@@ -214,7 +239,7 @@ class PlatformSafetyTests(unittest.TestCase):
             manager._run_shortcut_worker(
                 "run1", "Daily Build", "cmd.exe",
                 [{"name": "Build", "command": "echo ok", "start_in": ""}],
-                "sequential", "#2563EB", cancel_event,
+                "sequential", cancel_event,
             )
         launcher.assert_called_once()
         self.assertEqual(manager._ui_events.get_nowait()[0], "progress")
@@ -222,6 +247,171 @@ class PlatformSafetyTests(unittest.TestCase):
         self.assertEqual(queued[0], "result")
         self.assertIs(queued[3], result)
         manager._set_status.assert_not_called()
+
+    def test_card_uses_first_projected_action_color(self):
+        frame_class = shortcut_manager.ShortcutCard.__mro__[1]
+        widget = mock.Mock()
+        shortcut = {"name": "Demo", "actions": [
+            {"name": "One", "command": "echo 1"},
+            {"name": "Two", "command": "echo 2", "color": "#dc2626"},
+        ]}
+        with mock.patch.object(frame_class, "__init__", return_value=None), \
+                mock.patch("shortcut_manager.tk.Frame", return_value=widget), \
+                mock.patch("shortcut_manager.tk.Label", return_value=widget), \
+                mock.patch.object(shortcut_manager.ShortcutCard, "bind"), \
+                mock.patch.object(shortcut_manager.ShortcutCard, "set_visual_state"):
+            card = shortcut_manager.ShortcutCard(None, 0, shortcut, mock.Mock(), mock.Mock())
+        self.assertEqual(card.shortcut_color, "#DC2626")
+
+    def test_compact_card_only_builds_name_row_and_color_accent(self):
+        frame_class = shortcut_manager.ShortcutCard.__mro__[1]
+        widget = mock.Mock()
+        shortcut = {"name": "Demo", "actions": [
+            {"name": "Run", "command": "echo ok", "color": "#2563EB"},
+        ]}
+        with mock.patch.object(frame_class, "__init__", return_value=None), \
+                mock.patch("shortcut_manager.tk.Frame", return_value=widget), \
+                mock.patch("shortcut_manager.tk.Label", return_value=widget) as label, \
+                mock.patch.object(shortcut_manager.ShortcutCard, "bind"), \
+                mock.patch.object(shortcut_manager.ShortcutCard, "set_visual_state"):
+            card = shortcut_manager.ShortcutCard(
+                None, 0, shortcut, mock.Mock(), mock.Mock(), compact=True,
+            )
+        self.assertTrue(card.compact)
+        self.assertEqual(card.shortcut_color, "#2563EB")
+        self.assertEqual(label.call_count, 1)
+        self.assertIsNone(card.command_label)
+        self.assertIsNone(card.details_label)
+
+    def test_compact_toggle_refreshes_cards_without_losing_selection(self):
+        manager = shortcut_manager.ShortcutManager.__new__(shortcut_manager.ShortcutManager)
+        manager.refresh_cards = mock.Mock()
+        manager._toggle_compact_cards()
+        manager.refresh_cards.assert_called_once_with(preserve_selection=True)
+
+    def test_compact_toggle_is_a_small_square_toolbutton(self):
+        manager = shortcut_manager.ShortcutManager.__new__(shortcut_manager.ShortcutManager)
+        manager.main = mock.Mock()
+        manager.count_var = manager.search_var = manager.compact_cards_var = mock.Mock()
+        manager.clear_search = manager._toggle_compact_cards = mock.Mock()
+        manager.clone = manager.add = mock.Mock()
+        widget = mock.Mock()
+        with mock.patch("shortcut_manager.ttk.Frame", return_value=widget), \
+                mock.patch("shortcut_manager.ttk.Label", return_value=widget), \
+                mock.patch("shortcut_manager.ttk.Entry", return_value=widget), \
+                mock.patch("shortcut_manager.ttk.Button", return_value=widget), \
+                mock.patch("shortcut_manager.ttk.Checkbutton", return_value=widget) as toggle:
+            manager._build_toolbar()
+        options = toggle.call_args.kwargs
+        self.assertEqual(options["text"], "▦")
+        self.assertEqual(options["width"], 2)
+        self.assertEqual(options["style"], "CompactToggle.Toolbutton")
+
+    def test_settings_download_writes_shortcut_backup(self):
+        dialog = SimpleNamespace(
+            shortcut_provider=lambda: [{"name": "Demo", "command": "echo ok"}],
+            storage_status=mock.Mock(),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            destination = shortcut_manager.os.path.join(directory, "shortcuts.json")
+            with mock.patch(
+                "shortcut_manager.filedialog.asksaveasfilename", return_value=destination,
+            ):
+                shortcut_manager.SettingsDialog._export_shortcuts(dialog)
+            with open(destination, "r", encoding="utf-8") as backup:
+                payload = json.load(backup)
+        self.assertEqual(payload["application"], "FlashCMD")
+        self.assertEqual(payload["version"], "0.2.0")
+        self.assertEqual(payload["shortcuts"][0]["name"], "Demo")
+
+    def test_settings_upload_validates_confirms_and_replaces_shortcuts(self):
+        imported = {"shortcuts": [{"name": "Imported", "command": "echo ok"}]}
+        importer = mock.Mock(return_value=True)
+        dialog = SimpleNamespace(
+            shortcut_provider=lambda: [{"name": "Old"}],
+            shortcut_importer=importer, storage_status=mock.Mock(),
+        )
+        with tempfile.NamedTemporaryFile("w", suffix=".json", encoding="utf-8", delete=False) as backup:
+            json.dump(imported, backup)
+            source = backup.name
+        try:
+            with mock.patch("shortcut_manager.filedialog.askopenfilename", return_value=source), \
+                    mock.patch("shortcut_manager.messagebox.askyesno", return_value=True) as confirm:
+                shortcut_manager.SettingsDialog._import_shortcuts(dialog)
+        finally:
+            shortcut_manager.os.remove(source)
+        confirm.assert_called_once()
+        importer.assert_called_once()
+        self.assertEqual(importer.call_args.args[0][0]["name"], "Imported")
+
+    def test_settings_upload_cancel_keeps_existing_shortcuts(self):
+        imported = {"shortcuts": [{"name": "Imported", "command": "echo ok"}]}
+        importer = mock.Mock()
+        dialog = SimpleNamespace(
+            shortcut_provider=lambda: [{"name": "Old"}],
+            shortcut_importer=importer, storage_status=mock.Mock(),
+        )
+        with tempfile.NamedTemporaryFile("w", suffix=".json", encoding="utf-8", delete=False) as backup:
+            json.dump(imported, backup)
+            source = backup.name
+        try:
+            with mock.patch("shortcut_manager.filedialog.askopenfilename", return_value=source), \
+                    mock.patch("shortcut_manager.messagebox.askyesno", return_value=False):
+                shortcut_manager.SettingsDialog._import_shortcuts(dialog)
+        finally:
+            shortcut_manager.os.remove(source)
+        importer.assert_not_called()
+
+    def test_settings_upload_rejects_invalid_file_before_confirmation(self):
+        importer = mock.Mock()
+        dialog = SimpleNamespace(
+            shortcut_provider=lambda: [], shortcut_importer=importer,
+            storage_status=mock.Mock(),
+        )
+        with tempfile.NamedTemporaryFile("w", suffix=".json", encoding="utf-8", delete=False) as backup:
+            backup.write('{"shortcuts": [{"name": "Broken", "actions": []}]}')
+            source = backup.name
+        try:
+            with mock.patch("shortcut_manager.filedialog.askopenfilename", return_value=source), \
+                    mock.patch("shortcut_manager.messagebox.showerror") as showerror, \
+                    mock.patch("shortcut_manager.messagebox.askyesno") as confirm:
+                shortcut_manager.SettingsDialog._import_shortcuts(dialog)
+        finally:
+            shortcut_manager.os.remove(source)
+        showerror.assert_called_once()
+        confirm.assert_not_called()
+        importer.assert_not_called()
+
+    def test_failed_import_save_restores_existing_shortcuts(self):
+        old = [{"name": "Old", "command": "echo old"}]
+        manager = shortcut_manager.ShortcutManager.__new__(shortcut_manager.ShortcutManager)
+        manager.shortcuts = old
+        manager.selected_index = 0
+        manager.save = mock.Mock(return_value=False)
+        manager.refresh_cards = mock.Mock()
+        result = manager._replace_shortcuts_from_import([
+            {"name": "New", "command": "echo new"},
+        ])
+        self.assertFalse(result)
+        self.assertIs(manager.shortcuts, old)
+        self.assertEqual(manager.selected_index, 0)
+        manager.refresh_cards.assert_not_called()
+
+    def test_successful_import_replaces_saves_and_refreshes_shortcuts(self):
+        manager = shortcut_manager.ShortcutManager.__new__(shortcut_manager.ShortcutManager)
+        manager.shortcuts = [{"name": "Old", "command": "echo old"}]
+        manager.selected_index = 0
+        manager.save = mock.Mock(return_value=True)
+        manager.refresh_cards = mock.Mock()
+        manager._set_status = mock.Mock()
+        incoming = [{"name": "New", "command": "echo new"}]
+        result = manager._replace_shortcuts_from_import(incoming)
+        self.assertTrue(result)
+        self.assertEqual(manager.shortcuts, incoming)
+        self.assertIsNot(manager.shortcuts, incoming)
+        self.assertIsNone(manager.selected_index)
+        manager.save.assert_called_once_with()
+        manager.refresh_cards.assert_called_once_with(preserve_selection=False)
 
     def test_ui_event_processing_aggregates_all_failures_on_main_thread(self):
         manager = shortcut_manager.ShortcutManager.__new__(shortcut_manager.ShortcutManager)
@@ -350,13 +540,12 @@ class PlatformSafetyTests(unittest.TestCase):
              "program_path": "tool.exe", "arguments": "--go", "start_in": ""},
         ]
         dialog = SimpleNamespace(
-            name=mock.Mock(), folder=mock.Mock(), color_var=mock.Mock(),
+            name=mock.Mock(), folder=mock.Mock(),
             execution_mode=mock.Mock(), actions=actions, shortcut={},
             name_error=mock.Mock(), actions_error=mock.Mock(), action_list=mock.Mock(),
         )
         dialog.name.get.return_value = "Exported Task"
         dialog.folder.get.return_value = "General"
-        dialog.color_var.get.return_value = ""
         dialog.execution_mode.get.return_value = "parallel"
         with tempfile.TemporaryDirectory() as directory:
             destination = shortcut_manager.os.path.join(directory, "task.xml")
